@@ -23,12 +23,12 @@ def algo_config_to_class(algo_config):
 
 def build_mlp(input_dim, hidden_dims, output_dim):
     layers = []
-    prev_dim = input_dim
+    prev = input_dim
     for h in hidden_dims:
-        layers.append(nn.Linear(prev_dim, h))
+        layers.append(nn.Linear(prev, h))
         layers.append(nn.ReLU())
-        prev_dim = h
-    layers.append(nn.Linear(prev_dim, output_dim))
+        prev = h
+    layers.append(nn.Linear(prev, output_dim))
     return nn.Sequential(*layers)
 
 class BC_CaMI(BC):
@@ -41,6 +41,41 @@ class BC_CaMI(BC):
         - Adds momentum target update hook
     """
 
+    def _make_snippet_tensor(self, obs_seq):
+        """
+        obs_seq contains:
+        force           [B, H, 6]
+        robot0_eef_pos  [B, H, 3]
+        robot0_eef_quat [B, H, 4]
+        Returns:
+        x [B, H, 13]
+        """
+        return torch.cat(
+            [
+                obs_seq["force"],
+                obs_seq["robot0_eef_pos"],
+                obs_seq["robot0_eef_quat"],
+            ],
+            dim=-1,
+        )
+
+    def _encode_snippet(self, obs_seq, use_target=False):
+        x = self._make_snippet_tensor(obs_seq)  # [B, H, 13]
+
+        if use_target:
+            _, (h_n, c_n) = self.nets["snippet_encoder_target"](x)
+            feat = h_n[-1]   # [B, hidden_dim]
+            key = self.nets["key_proj_target"](feat)
+        else:
+            _, (h_n, c_n) = self.nets["snippet_encoder"](x)
+            feat = h_n[-1]
+            key = self.nets["key_proj"](feat)
+
+        if getattr(self.algo_config.cami, "normalize_embeddings", False):
+            key = torch.nn.functional.normalize(key, dim=-1)
+
+        return feat, key
+
     def _create_networks(self):
         """
         Create networks and place them into @self.nets.
@@ -52,27 +87,32 @@ class BC_CaMI(BC):
         """
         super(BC_CaMI, self)._create_networks()
 
-        # ------------------------------------------------------------------ #
-        # Placeholder CaMI modules
-        # These will be replaced later with:
-        #   - anchor fusion encoder
-        #   - query projection head
-        #   - future snippet encoder
-        #   - key projection head
-        # ------------------------------------------------------------------ #
         anchor_dim = self.algo_config.actor_layer_dims[-1]
-        proj_hidden = list(self.algo_config.cami.query_proj_layers)
+        query_hidden = list(self.algo_config.cami.query_proj_layers)
+        key_hidden = list(self.algo_config.cami.key_proj_layers)
         contrastive_dim = self.algo_config.cami.contrastive_dim
 
         self.nets["query_proj"] = build_mlp(
             input_dim=anchor_dim,
-            hidden_dims=proj_hidden,
+            hidden_dims=query_hidden,
             output_dim=contrastive_dim,
         )
-        self.nets["snippet_encoder"] = nn.Identity()
-        self.nets["key_proj"] = nn.Identity()
 
-        # Momentum / target copy for future snippet encoder branch
+        snippet_input_dim = 13  # force + eef_pos + eef_quat
+
+        self.nets["snippet_encoder"] = nn.LSTM(
+            input_size=snippet_input_dim,
+            hidden_size=self.algo_config.cami.snippet_hidden_dim,
+            num_layers=self.algo_config.cami.snippet_num_layers,
+            batch_first=True,
+        )
+
+        self.nets["key_proj"] = build_mlp(
+            input_dim=self.algo_config.cami.snippet_hidden_dim,
+            hidden_dims=key_hidden,
+            output_dim=contrastive_dim,
+        )
+
         self.nets["snippet_encoder_target"] = copy.deepcopy(self.nets["snippet_encoder"])
         self.nets["key_proj_target"] = copy.deepcopy(self.nets["key_proj"])
 
@@ -87,32 +127,59 @@ class BC_CaMI(BC):
         """
         Process dataloader batch.
 
-        For now:
-            - keep standard BC inputs
-            - optionally pull in future CaMI fields if present
+        Current behavior:
+            - anchor obs = timestep 0 (same as BC)
+            - action target = timestep 0
+            - additionally build a positive future snippet from the same sequence
+            using timesteps 1..H for low-dim CaMI snippet inputs
         """
-        input_batch = super(BC_CaMI, self).process_batch_for_training(batch)
+        input_batch = dict()
 
-        print("obs keys:", batch["obs"].keys())
-        print("force shape before processing:", batch["obs"]["force"].shape)
+        # BC-style current anchor at t = 0
+        input_batch["obs"] = {k: batch["obs"][k][:, 0, :] for k in batch["obs"]}
+        input_batch["goal_obs"] = batch.get("goal_obs", None)
+        input_batch["actions"] = batch["actions"][:, 0, :]
 
-        # Optional CaMI fields - only included if dataset already provides them
+        H = self.algo_config.cami.snippet_horizon
+        snippet_keys = ["force", "robot0_eef_pos", "robot0_eef_quat"]
+
+        # Build positive future snippet from same trajectory: timesteps 1..H
+        if all(k in batch["obs"] for k in snippet_keys):
+            pos_future_obs = {}
+
+            for k in snippet_keys:
+                seq = batch["obs"][k]   # expected [B, T, D]
+                T = seq.shape[1]
+                end = min(H + 1, T)
+
+                # future slice: t = 1 .. H
+                snippet = seq[:, 1:end, :]
+
+
+                # pad with last available future frame if too short
+                if snippet.shape[1] < H:
+                    if snippet.shape[1] == 0:
+                        # fallback if sequence length is unexpectedly 1
+                        snippet = seq[:, 0:1, :].repeat(1, H, 1)
+                    else:
+                        pad_count = H - snippet.shape[1]
+                        pad = snippet[:, -1:, :].repeat(1, pad_count, 1)
+                        snippet = torch.cat([snippet, pad], dim=1)
+
+                pos_future_obs[k] = snippet
+            
+            # diff = (pos_future_obs["force"][:, 0, :] - pos_future_obs["force"][:, -1, :]).abs().mean()
+            # print("mean force diff across snippet:", diff.item())
+
+            input_batch["pos_future_obs"] = pos_future_obs
+
+        # Optional contact label if already available
         if "contact_label" in batch:
-            input_batch["contact_label"] = TensorUtils.to_device(
-                batch["contact_label"], self.device
-            )
+            input_batch["contact_label"] = batch["contact_label"]
 
-        if "pos_future_obs" in batch:
-            input_batch["pos_future_obs"] = TensorUtils.to_float(
-                TensorUtils.to_device(batch["pos_future_obs"], self.device)
-            )
+        # Move to device / float at the end
+        input_batch = TensorUtils.to_float(TensorUtils.to_device(input_batch, self.device))
 
-        if "neg_future_obs" in batch:
-            input_batch["neg_future_obs"] = TensorUtils.to_float(
-                TensorUtils.to_device(batch["neg_future_obs"], self.device)
-            )
-
-        print("force shape after processing:", input_batch["obs"]["force"].shape)
         return input_batch
 
     def train_on_batch(self, batch, epoch, validate=False):
@@ -138,13 +205,6 @@ class BC_CaMI(BC):
         return info
 
     def _forward_training(self, batch):
-        """
-        Forward pass during training.
-
-        Version 1:
-            - run normal BC action prediction
-            - create placeholder CaMI outputs
-        """
         predictions = OrderedDict()
 
         actions, anchor_feat = self.nets["policy"].forward_with_features(
@@ -153,21 +213,40 @@ class BC_CaMI(BC):
         )
 
         query_embedding = self.nets["query_proj"](anchor_feat)
-
         if getattr(self.algo_config.cami, "normalize_embeddings", False):
             query_embedding = torch.nn.functional.normalize(query_embedding, dim=-1)
 
         predictions["actions"] = actions
         predictions["anchor_feat"] = anchor_feat
         predictions["query_embedding"] = query_embedding
+
+        if "pos_future_obs" in batch and all(
+            k in batch["pos_future_obs"] for k in ["force", "robot0_eef_pos", "robot0_eef_quat"]
+        ):
+            pos_snippet_feat, pos_key_embedding = self._encode_snippet(
+                batch["pos_future_obs"], use_target=False
+            )
+            predictions["pos_snippet_feat"] = pos_snippet_feat
+            predictions["pos_key_embedding"] = pos_key_embedding
+
         predictions["cami_loss"] = torch.tensor(0.0, device=self.device)
 
-        if not hasattr(self, "_printed_anchor_debug"):
+        if not hasattr(self, "_printed_cami_debug"):
             print("[BC_CaMI DEBUG] anchor_feat shape:", tuple(anchor_feat.shape))
             print("[BC_CaMI DEBUG] query_embedding shape:", tuple(query_embedding.shape))
             print("[BC_CaMI DEBUG] actions shape:", tuple(actions.shape))
             print("[BC_CaMI DEBUG] target actions shape:", tuple(batch["actions"].shape))
-            self._printed_anchor_debug = True
+
+            if "pos_future_obs" in batch and all(
+                k in batch["pos_future_obs"] for k in ["force", "robot0_eef_pos", "robot0_eef_quat"]
+            ):
+                print("[BC_CaMI DEBUG] pos_future force shape:", tuple(batch["pos_future_obs"]["force"].shape))
+                print("[BC_CaMI DEBUG] pos_future eef_pos shape:", tuple(batch["pos_future_obs"]["robot0_eef_pos"].shape))
+                print("[BC_CaMI DEBUG] pos_future eef_quat shape:", tuple(batch["pos_future_obs"]["robot0_eef_quat"].shape))
+                print("[BC_CaMI DEBUG] pos_snippet_feat shape:", tuple(predictions["pos_snippet_feat"].shape))
+                print("[BC_CaMI DEBUG] pos_key_embedding shape:", tuple(predictions["pos_key_embedding"].shape))
+
+            self._printed_cami_debug = True
 
         return predictions
     

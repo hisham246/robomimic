@@ -199,7 +199,7 @@ class BCCaMIConfig(BCConfig):
         self.algo.cami.query_proj_layers = (128,)
         self.algo.cami.key_proj_layers = (128,)
 
-        self.algo.cami.snippet_encoder_type = "gru"
+        self.algo.cami.snippet_encoder_type = "lstm"
         self.algo.cami.snippet_hidden_dim = 256
         self.algo.cami.snippet_num_layers = 1
 
