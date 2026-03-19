@@ -1,18 +1,18 @@
 {
     "algo_name": "bc_cami",
     "experiment": {
-        "name": "bc_cami_demo_20260319_011003",
+        "name": "bc_cami_demo_20260319_153313",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
             "log_tb": false,
-            "log_wandb": true,
+            "log_wandb": false,
             "wandb_proj_name": "cami"
         },
         "save": {
             "enabled": true,
             "every_n_seconds": null,
-            "every_n_epochs": 50,
+            "every_n_epochs": 1,
             "epochs": [],
             "on_best_validation": false,
             "on_best_rollout_return": false,

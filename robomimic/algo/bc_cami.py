@@ -471,4 +471,25 @@ class BC_CaMI(BC):
         Get policy action outputs.
         """
         assert not self.nets.training
+        if "force" not in obs_dict:
+            if ("robot0_ee_force" in obs_dict) and ("robot0_ee_torque" in obs_dict):
+                obs_dict = dict(obs_dict)
+                obs_dict["force"] = 1000.0 * torch.cat(
+                    [obs_dict["robot0_ee_force"], obs_dict["robot0_ee_torque"]],
+                    dim=-1,
+                )
+
+                if not hasattr(self, "_printed_force_fallback_debug"):
+                    print("[FORCE FALLBACK DEBUG] robot0_ee_force shape:", tuple(obs_dict["robot0_ee_force"].shape))
+                    print("[FORCE FALLBACK DEBUG] robot0_ee_torque shape:", tuple(obs_dict["robot0_ee_torque"].shape))
+                    print("[FORCE FALLBACK DEBUG] constructed force shape:", tuple(obs_dict["force"].shape))
+                    self._printed_force_fallback_debug = True
+        
+        if not hasattr(self, "_printed_obs_shape_debug"):
+            print("[POLICY SHAPE DEBUG] expected obs_shapes:", self.obs_shapes)
+            for k, v in obs_dict.items():
+                if hasattr(v, "shape"):
+                    print(f"[POLICY SHAPE DEBUG] received {k}: {tuple(v.shape)}")
+            self._printed_obs_shape_debug = True
+
         return self.nets["policy"](obs_dict, goal_dict=goal_dict)
