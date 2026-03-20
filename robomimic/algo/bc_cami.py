@@ -175,9 +175,16 @@ class BC_CaMI(BC):
 
             input_batch["pos_future_obs"] = pos_future_obs
 
-        # Optional contact label if already available
+        # # Optional contact label if already available
+        # if "contact_label" in batch:
+        #     input_batch["contact_label"] = batch["contact_label"]
+
         if "contact_label" in batch:
-            input_batch["contact_label"] = batch["contact_label"]
+            cl = batch["contact_label"]
+            # if sequence-shaped, use anchor timestep t=0
+            if cl.ndim > 1:
+                cl = cl[:, 0]
+            input_batch["contact_label"] = cl.long()
 
         # Move to device / float at the end
         input_batch = TensorUtils.to_float(TensorUtils.to_device(input_batch, self.device))
