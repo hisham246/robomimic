@@ -24,7 +24,7 @@ class BCCaMIConfig(BCConfig):
         # if "force" not in self.observation.modalities.obs.low_dim:
         #     self.observation.modalities.obs.low_dim.append("force")
 
-        self.observation.modalities.obs.rgb = ["agentview_image"]
+        self.observation.modalities.obs.rgb = ["agentview_image", "robot0_eye_in_hand_image"]
         self.observation.modalities.obs.low_dim = ["robot0_eef_pos", "robot0_eef_quat", "force"]
 
         self.observation.modalities.goal.rgb = []
@@ -64,7 +64,7 @@ class BCCaMIConfig(BCConfig):
         self.algo.cami.snippet_hidden_dim = 256
         self.algo.cami.snippet_num_layers = 1
 
-        self.algo.cami.image_obs_key = "agentview_image"
+        self.algo.cami.image_obs_key = ["agentview_image", "robot0_eye_in_hand_image"]
         self.algo.cami.force_obs_key = "force"
         self.algo.cami.contact_label_key = "contact_label"
 

@@ -140,7 +140,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.get_pad_mask = get_pad_mask
 
         # Contact threshold for CaMI
-        self.contact_threshold = 1.0
+        self.contact_threshold = 10.0
 
         self.load_demo_info(filter_by_attribute=self.filter_by_attribute, demo_limit=demo_limit)
 
@@ -186,39 +186,77 @@ class SequenceDataset(torch.utils.data.Dataset):
 
         self.close_and_delete_hdf5_handle()
 
-    def _get_force_from_states(self, ep, states_array):
-        state_dim_original = int(self.hdf5_file["data/{}".format(ep)].attrs["state_dim_original"])
-        state_dim_ft = int(self.hdf5_file["data/{}".format(ep)].attrs["state_dim_ft"])
+   # ---- Wiping ---- 
+    # def _get_force_from_states(self, ep, states_array):
+    #     state_dim_original = int(self.hdf5_file["data/{}".format(ep)].attrs["state_dim_original"])
+    #     state_dim_ft = int(self.hdf5_file["data/{}".format(ep)].attrs["state_dim_ft"])
 
-        assert state_dim_ft >= 6, "Expected at least 6 appended FT dims in states"
+    #     assert state_dim_ft >= 6, "Expected at least 6 appended FT dims in states"
 
-        ft = states_array[:, state_dim_original : state_dim_original + 6].astype(np.float32)
-        return ft
+    #     ft = states_array[:, state_dim_original : state_dim_original + 6].astype(np.float32)
+    #     return ft
+
+    # def _get_contact_from_force(self, force_array, threshold=1.0):
+    #     contact = (np.linalg.norm(force_array[:, :3], axis=1) > threshold).astype(np.float32)
+    #     return contact[:, None]
     
+    # def _get_synthetic_obs(self, ep, obs_key, prefix="obs"):
+    #     states_arr = self.hdf5_file[f"data/{ep}/states"][()].astype("float32")
+
+    #     if obs_key == "force":
+    #         force_arr = self._get_force_from_states(ep, states_arr)
+    #         if prefix == "next_obs":
+    #             return np.concatenate([force_arr[1:], force_arr[-1:]], axis=0)
+    #         return force_arr
+
+    #     if obs_key == "contact_label":
+    #         force_arr = self._get_force_from_states(ep, states_arr)
+    #         contact_arr = self._get_contact_from_force(force_arr, threshold=self.contact_threshold)
+    #         if prefix == "next_obs":
+    #             return np.concatenate([contact_arr[1:], contact_arr[-1:]], axis=0)
+    #         return contact_arr
+
+    #     raise KeyError(obs_key)
+    
+    # def _is_synthetic_obs_key(self, obs_key):
+    #     return obs_key in ["force", "contact_label"]
+
+    # -----Robomimic datasets----
     def _get_contact_from_force(self, force_array, threshold=1.0):
         contact = (np.linalg.norm(force_array[:, :3], axis=1) > threshold).astype(np.float32)
         return contact[:, None]
-    
+
+
     def _get_synthetic_obs(self, ep, obs_key, prefix="obs"):
-        states_arr = self.hdf5_file[f"data/{ep}/states"][()].astype("float32")
+        """
+        Construct only truly synthetic observation keys.
 
-        if obs_key == "force":
-            force_arr = self._get_force_from_states(ep, states_arr)
-            if prefix == "next_obs":
-                return np.concatenate([force_arr[1:], force_arr[-1:]], axis=0)
-            return force_arr
-
+        Now that force is stored directly in the dataset, we should not reconstruct it
+        from states anymore. The only synthetic key we still support here is
+        contact_label, derived from the stored force signal.
+        """
         if obs_key == "contact_label":
-            force_arr = self._get_force_from_states(ep, states_arr)
-            contact_arr = self._get_contact_from_force(force_arr, threshold=self.contact_threshold)
-            if prefix == "next_obs":
-                return np.concatenate([contact_arr[1:], contact_arr[-1:]], axis=0)
+            force_key = "data/{}/{}/force".format(ep, prefix)
+            if force_key not in self.hdf5_file:
+                raise KeyError(
+                    "contact_label requested but stored force not found at {}".format(force_key)
+                )
+            force_arr = self.hdf5_file[force_key][()].astype(np.float32)
+            contact_arr = self._get_contact_from_force(
+                force_arr,
+                threshold=self.contact_threshold,
+            )
             return contact_arr
 
         raise KeyError(obs_key)
-    
+
+
     def _is_synthetic_obs_key(self, obs_key):
-        return obs_key in ["force", "contact_label"]
+        """
+        Only contact_label remains synthetic.
+        Force is now expected to be stored explicitly in the dataset.
+        """
+        return obs_key in ["contact_label"]
     
     def _get_obs_traj(self, ep, prefix="obs"):
         """

@@ -246,13 +246,14 @@ def augment_dataset_with_force(
                 torque_sensor_name=torque_sensor_name,
             )
 
-            # Standard obs/next_obs alignment
-            obs_force_rawbias = force_rawbias[:-1]
-            next_obs_force_rawbias = force_rawbias[1:]
+            # Keep full-length alignment
+            obs_force_rawbias = force_rawbias
+            obs_force_obsbias = force_obsbias
 
-            obs_force_obsbias = force_obsbias[:-1]
-            next_obs_force_obsbias = force_obsbias[1:]
-
+            # For next_obs, use a one-step shift and repeat the last row
+            next_obs_force_rawbias = np.concatenate([force_rawbias[1:], force_rawbias[-1:]], axis=0)
+            next_obs_force_obsbias = np.concatenate([force_obsbias[1:], force_obsbias[-1:]], axis=0)
+            
             if "obs" not in out_demo:
                 out_demo.create_group("obs")
             if "next_obs" not in out_demo:

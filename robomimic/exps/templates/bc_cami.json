@@ -1,18 +1,18 @@
 {
     "algo_name": "bc_cami",
     "experiment": {
-        "name": "test",
+        "name": "Test_BC_CaMI",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
             "log_tb": false,
-            "log_wandb": true,
+            "log_wandb": false,
             "wandb_proj_name": "cami"
         },
         "save": {
             "enabled": true,
             "every_n_seconds": null,
-            "every_n_epochs": 50,
+            "every_n_epochs": 1,
             "epochs": [],
             "on_best_validation": false,
             "on_best_rollout_return": false,
@@ -28,9 +28,9 @@
         "video_skip": 5,
         "rollout": {
             "enabled": true,
-            "n": 10,
+            "n": 1,
             "horizon": 400,
-            "rate": 50,
+            "rate": 1,
             "warmstart": 0,
             "terminate_on_success": true
         },
@@ -39,7 +39,7 @@
     },
     "train": {
         "data": null,
-        "output_dir": "../bc_cami_trained_models",
+        "output_dir": "../../bc_cami_trained_models",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "all",
@@ -68,7 +68,7 @@
         "goal_mode": null,
         "cuda": true,
         "batch_size": 100,
-        "num_epochs": 500,
+        "num_epochs": 2000,
         "seed": 1,
         "max_grad_norm": null
     },
@@ -235,7 +235,10 @@
             "snippet_encoder_type": "lstm",
             "snippet_hidden_dim": 256,
             "snippet_num_layers": 1,
-            "image_obs_key": "agentview_image",
+            "image_obs_key": [
+                "agentview_image",
+                "robot0_eye_in_hand_image"
+            ],
             "force_obs_key": "force",
             "contact_label_key": "contact_label",
             "normalize_embeddings": true
@@ -250,7 +253,8 @@
                     "force"
                 ],
                 "rgb": [
-                    "agentview_image"
+                    "agentview_image",
+                    "robot0_eye_in_hand_image"
                 ],
                 "depth": [],
                 "scan": []

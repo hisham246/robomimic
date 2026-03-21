@@ -184,7 +184,7 @@ class BC_CaMI(BC):
             # if sequence-shaped, use anchor timestep t=0
             if cl.ndim > 1:
                 cl = cl[:, 0]
-            input_batch["contact_label"] = cl.long()
+            input_batch["contact_label"] = cl
 
         # Move to device / float at the end
         input_batch = TensorUtils.to_float(TensorUtils.to_device(input_batch, self.device))
@@ -257,15 +257,21 @@ class BC_CaMI(BC):
 
         return predictions
     
-    def _compute_cami_inbatch_loss(self, query_embedding, key_embedding):
+    def _compute_cami_contact_inbatch_loss(self, query_embedding, key_embedding, contact_label):
         """
-        In-batch InfoNCE:
-        - positive for sample i is key_embedding[i]
-        - negatives are key_embedding[j] for j != i in the same batch
+        Contact-aware in-batch InfoNCE.
+
+        For anchor i:
+            positive = key_embedding[i]
+            negatives = key_embedding[j] such that contact_label[j] != contact_label[i]
+
+        Same-contact samples are ignored as negatives.
+        Anchors with no valid opposite-contact negatives are skipped from the loss.
 
         Args:
             query_embedding: (B, D)
             key_embedding:   (B, D)
+            contact_label:   (B,) tensor with binary or categorical labels
 
         Returns:
             cami_loss: scalar tensor
@@ -273,48 +279,77 @@ class BC_CaMI(BC):
         """
         temperature = self.algo_config.cami.temperature
 
-        # extra safety, even if already normalized upstream
         if getattr(self.algo_config.cami, "normalize_embeddings", False):
             query_embedding = F.normalize(query_embedding, dim=-1)
             key_embedding = F.normalize(key_embedding, dim=-1)
 
-        # (B, B)
+        contact_label = contact_label.long().view(-1)
+        B = query_embedding.shape[0]
+
+        # similarity matrix: (B, B)
         logits = torch.matmul(query_embedding, key_embedding.T) / temperature
 
-        # diagonal entries are positives
-        labels = torch.arange(logits.shape[0], device=logits.device)
+        # positive logits are diagonal entries
+        pos_logits = logits.diag()  # (B,)
 
-        cami_loss = F.cross_entropy(logits, labels)
+        # valid negatives for anchor i are samples j with opposite contact label
+        neg_mask = contact_label.unsqueeze(1) != contact_label.unsqueeze(0)  # (B, B)
+
+        # number of valid negatives per anchor
+        valid_neg_count = neg_mask.sum(dim=1)  # (B,)
+        valid_anchor_mask = valid_neg_count > 0  # (B,)
+
+        # if no anchors in this batch have valid opposite-contact negatives, return zero safely
+        if valid_anchor_mask.sum() == 0:
+            zero = logits.sum() * 0.0
+            cami_info = {
+                "cami_valid_anchor_count": zero.detach(),
+                "cami_valid_anchor_fraction": zero.detach(),
+                "cami_pos_logit_mean": zero.detach(),
+                "cami_neg_logit_mean": zero.detach(),
+                "cami_retrieval_acc": zero.detach(),
+                "cami_avg_valid_negatives": zero.detach(),
+            }
+            return zero, cami_info
+
+        # masked negatives only
+        neg_logits_masked = logits.masked_fill(~neg_mask, float("-inf"))  # (B, B)
+
+        # denominator = exp(pos) + sum exp(valid negatives)
+        denom_inputs = torch.cat([pos_logits.unsqueeze(1), neg_logits_masked], dim=1)  # (B, 1+B)
+        log_denom = torch.logsumexp(denom_inputs, dim=1)  # (B,)
+
+        per_anchor_loss = -(pos_logits - log_denom)  # (B,)
+        cami_loss = per_anchor_loss[valid_anchor_mask].mean()
 
         with torch.no_grad():
-            pos_logits = logits.diag()
+            valid_pos_logits = pos_logits[valid_anchor_mask]
+            pos_logit_mean = valid_pos_logits.mean()
 
-            B = logits.shape[0]
-            if B > 1:
-                neg_mask = ~torch.eye(B, dtype=torch.bool, device=logits.device)
-                neg_logits = logits[neg_mask]
-                neg_logit_mean = neg_logits.mean()
+            if neg_mask.any():
+                neg_logit_mean = logits[neg_mask].mean()
             else:
                 neg_logit_mean = torch.zeros((), device=logits.device)
 
-            inbatch_acc = (logits.argmax(dim=1) == labels).float().mean()
+            max_neg_logits = neg_logits_masked.max(dim=1).values
+            retrieval_acc = (
+                (pos_logits[valid_anchor_mask] > max_neg_logits[valid_anchor_mask]).float().mean()
+            )
 
-            q_norm = query_embedding.norm(dim=-1).mean()
-            k_norm = key_embedding.norm(dim=-1).mean()
-
-        cami_info = {
-            "cami_pos_logit_mean": pos_logits.mean(),
-            "cami_neg_logit_mean": neg_logit_mean,
-            "cami_inbatch_acc": inbatch_acc,
-            "query_norm_mean": q_norm,
-            "key_norm_mean": k_norm,
-        }
+            cami_info = {
+                "cami_valid_anchor_count": valid_anchor_mask.float().sum(),
+                "cami_valid_anchor_fraction": valid_anchor_mask.float().mean(),
+                "cami_pos_logit_mean": pos_logit_mean,
+                "cami_neg_logit_mean": neg_logit_mean,
+                "cami_retrieval_acc": retrieval_acc,
+                "cami_avg_valid_negatives": valid_neg_count[valid_anchor_mask].float().mean(),
+            }
 
         return cami_loss, cami_info
     
     def _compute_losses(self, predictions, batch):
         """
-        Compute BC loss + MVP CaMI in-batch InfoNCE loss.
+        Compute BC loss + contact-aware CaMI in-batch InfoNCE loss.
         """
         losses = OrderedDict()
 
@@ -334,15 +369,28 @@ class BC_CaMI(BC):
         bc_action_loss = sum(action_losses)
         losses["bc_action_loss"] = bc_action_loss
 
-        # CaMI in-batch InfoNCE
-        if getattr(self.algo_config.cami, "enabled", False) and "pos_key_embedding" in predictions:
+        # Contact-aware CaMI in-batch InfoNCE
+        if (
+            getattr(self.algo_config.cami, "enabled", False)
+            and "pos_key_embedding" in predictions
+            and "contact_label" in batch
+        ):
             query_embedding = predictions["query_embedding"]
             key_embedding = predictions["pos_key_embedding"]
+            contact_label = batch["contact_label"].long().view(-1)
 
-            cami_loss, cami_info = self._compute_cami_inbatch_loss(
+            cami_loss, cami_info = self._compute_cami_contact_inbatch_loss(
                 query_embedding=query_embedding,
                 key_embedding=key_embedding,
+                contact_label=contact_label,
             )
+
+            if not hasattr(self, "_printed_contact_debug"):
+                print("[BC_CaMI DEBUG] contact_label shape:", tuple(contact_label.shape))
+                print("[BC_CaMI DEBUG] unique contact labels:", torch.unique(contact_label))
+                print("[BC_CaMI DEBUG] valid anchor fraction:", cami_info["cami_valid_anchor_fraction"].item())
+                print("[BC_CaMI DEBUG] avg valid negatives:", cami_info["cami_avg_valid_negatives"].item())
+                self._printed_contact_debug = True
             losses["cami_loss"] = cami_loss
 
             for k, v in cami_info.items():
@@ -355,8 +403,15 @@ class BC_CaMI(BC):
                 + self.algo_config.cami.loss_weight * cami_loss
             )
         else:
-            losses["cami_loss"] = torch.zeros((), device=actions.device, dtype=actions.dtype)
-            losses["cami_logit_gap"] = torch.zeros((), device=actions.device, dtype=actions.dtype)
+            zero = torch.zeros((), device=actions.device, dtype=actions.dtype)
+            losses["cami_loss"] = zero
+            losses["cami_logit_gap"] = zero
+            losses["cami_valid_anchor_count"] = zero
+            losses["cami_valid_anchor_fraction"] = zero
+            losses["cami_pos_logit_mean"] = zero
+            losses["cami_neg_logit_mean"] = zero
+            losses["cami_retrieval_acc"] = zero
+            losses["cami_avg_valid_negatives"] = zero
             losses["action_loss"] = bc_action_loss
 
         return losses
@@ -453,12 +508,18 @@ class BC_CaMI(BC):
             log["CaMI/Pos_Logit_Mean"] = losses["cami_pos_logit_mean"].item()
         if "cami_neg_logit_mean" in losses:
             log["CaMI/Neg_Logit_Mean"] = losses["cami_neg_logit_mean"].item()
-        if "cami_inbatch_acc" in losses:
-            log["CaMI/InBatch_Acc"] = losses["cami_inbatch_acc"].item()
-        if "query_norm_mean" in losses:
-            log["CaMI/Query_Norm_Mean"] = losses["query_norm_mean"].item()
-        if "key_norm_mean" in losses:
-            log["CaMI/Key_Norm_Mean"] = losses["key_norm_mean"].item()
+        if "cami_valid_anchor_count" in losses:
+            log["CaMI/Valid_Anchor_Count"] = losses["cami_valid_anchor_count"].item()
+        if "cami_valid_anchor_fraction" in losses:
+            log["CaMI/Valid_Anchor_Fraction"] = losses["cami_valid_anchor_fraction"].item()
+        if "cami_retrieval_acc" in losses:
+            log["CaMI/Retrieval_Acc"] = losses["cami_retrieval_acc"].item()
+        if "cami_avg_valid_negatives" in losses:
+            log["CaMI/Avg_Valid_Negatives"] = losses["cami_avg_valid_negatives"].item()
+        # if "query_norm_mean" in losses:
+        #     log["CaMI/Query_Norm_Mean"] = losses["query_norm_mean"].item()
+        # if "key_norm_mean" in losses:
+        #     log["CaMI/Key_Norm_Mean"] = losses["key_norm_mean"].item()
         if "cami_logit_gap" in losses:
             log["CaMI/Logit_Gap"] = losses["cami_logit_gap"].item()
 
