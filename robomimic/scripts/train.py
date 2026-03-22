@@ -143,8 +143,6 @@ def train(config, device, resume=False):
                     use_image_obs=shape_meta["use_images"] or shape_meta["use_depths"],
                 )
                 env = EnvUtils.create_env_from_metadata(**env_kwargs)
-                # handle environment wrappers
-                env = EnvUtils.wrap_env_from_config(env, config=config)  # apply environment warpper, if applicable
                 return env
             for env_name in env_names:
                 env = create_env(env_name)

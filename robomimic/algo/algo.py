@@ -567,14 +567,14 @@ class RolloutPolicy(object):
         if goal is not None:
             goal = self._prepare_observation(goal, batched_ob=batched_ob)
 
-        if not hasattr(self, "_printed_rollout_obs_debug"):
-            print("\n[ROLLOUT DEBUG] obs keys:", list(ob.keys()))
-            for k, v in ob.items():
-                try:
-                    print(f"[ROLLOUT DEBUG] {k}: shape={tuple(v.shape)}, dtype={v.dtype}")
-                except Exception:
-                    print(f"[ROLLOUT DEBUG] {k}: type={type(v)}")
-            self._printed_rollout_obs_debug = True
+        # if not hasattr(self, "_printed_rollout_obs_debug"):
+        #     print("\n[ROLLOUT DEBUG] obs keys:", list(ob.keys()))
+        #     for k, v in ob.items():
+        #         try:
+        #             print(f"[ROLLOUT DEBUG] {k}: shape={tuple(v.shape)}, dtype={v.dtype}")
+        #         except Exception:
+        #             print(f"[ROLLOUT DEBUG] {k}: type={type(v)}")
+        #     self._printed_rollout_obs_debug = True
         
         ac = self.policy.get_action(obs_dict=ob, goal_dict=goal)
         if not batched_ob:

@@ -57,6 +57,8 @@ class BC_CaMI(BC):
                 obs_seq["force"],
                 obs_seq["robot0_eef_pos"],
                 obs_seq["robot0_eef_quat"],
+                obs_seq["robot0_gripper_qpos"],
+
             ],
             dim=-1,
         )
@@ -100,7 +102,7 @@ class BC_CaMI(BC):
             output_dim=contrastive_dim,
         )
 
-        snippet_input_dim = 13  # force + eef_pos + eef_quat
+        snippet_input_dim = 15  # force + eef_pos + eef_quat + gripper_qpos
 
         self.nets["snippet_encoder"] = nn.LSTM(
             input_size=snippet_input_dim,
@@ -138,12 +140,17 @@ class BC_CaMI(BC):
         input_batch = dict()
 
         # BC-style current anchor at t = 0
-        input_batch["obs"] = {k: batch["obs"][k][:, 0, :] for k in batch["obs"]}
+        # Do NOT pass contact_label into the policy encoder even if the dataset provides it as an obs key.
+        input_batch["obs"] = {
+            k: batch["obs"][k][:, 0, :]
+            for k in batch["obs"]
+            if k != "contact_label"
+        }        
         input_batch["goal_obs"] = batch.get("goal_obs", None)
         input_batch["actions"] = batch["actions"][:, 0, :]
 
         H = self.algo_config.cami.snippet_horizon
-        snippet_keys = ["force", "robot0_eef_pos", "robot0_eef_quat"]
+        snippet_keys = ["force", "robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
 
         # Build positive future snippet from same trajectory: timesteps 1..H
         if all(k in batch["obs"] for k in snippet_keys):
@@ -179,12 +186,33 @@ class BC_CaMI(BC):
         # if "contact_label" in batch:
         #     input_batch["contact_label"] = batch["contact_label"]
 
+        # Extract contact labels for CaMI grouping.
+        # Priority:
+        #   1) top-level contact_label if available
+        #   2) obs/contact_label if available
+        #   3) derive from anchor force
         if "contact_label" in batch:
             cl = batch["contact_label"]
-            # if sequence-shaped, use anchor timestep t=0
+        elif "obs" in batch and "contact_label" in batch["obs"]:
+            cl = batch["obs"]["contact_label"]
+        else:
+            cl = None
+
+        if cl is not None:
             if cl.ndim > 1:
                 cl = cl[:, 0]
+            if cl.ndim > 1:
+                cl = cl.squeeze(-1)
             input_batch["contact_label"] = cl
+        else:
+            # Fallback: derive from anchor force magnitude
+            # batch["obs"]["force"] is expected to be [B, T, 6]
+            force_seq = batch["obs"]["force"]
+            force_t0 = force_seq[:, 0, :3]   # use force only, not torque
+            force_mag = torch.norm(force_t0, dim=-1)
+
+            threshold = getattr(self.algo_config.cami, "contact_threshold", 10.0)
+            input_batch["contact_label"] = (force_mag > threshold).float()
 
         # Move to device / float at the end
         input_batch = TensorUtils.to_float(TensorUtils.to_device(input_batch, self.device))
@@ -230,7 +258,8 @@ class BC_CaMI(BC):
         predictions["query_embedding"] = query_embedding
 
         if "pos_future_obs" in batch and all(
-            k in batch["pos_future_obs"] for k in ["force", "robot0_eef_pos", "robot0_eef_quat"]
+            k in batch["pos_future_obs"]
+            for k in ["force", "robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
         ):
             pos_snippet_feat, pos_key_embedding = self._encode_snippet(
                 batch["pos_future_obs"], use_target=False
@@ -238,22 +267,22 @@ class BC_CaMI(BC):
             predictions["pos_snippet_feat"] = pos_snippet_feat
             predictions["pos_key_embedding"] = pos_key_embedding
 
-        if not hasattr(self, "_printed_cami_debug"):
-            print("[BC_CaMI DEBUG] anchor_feat shape:", tuple(anchor_feat.shape))
-            print("[BC_CaMI DEBUG] query_embedding shape:", tuple(query_embedding.shape))
-            print("[BC_CaMI DEBUG] actions shape:", tuple(actions.shape))
-            print("[BC_CaMI DEBUG] target actions shape:", tuple(batch["actions"].shape))
+        # if not hasattr(self, "_printed_cami_debug"):
+        #     print("[BC_CaMI DEBUG] anchor_feat shape:", tuple(anchor_feat.shape))
+        #     print("[BC_CaMI DEBUG] query_embedding shape:", tuple(query_embedding.shape))
+        #     print("[BC_CaMI DEBUG] actions shape:", tuple(actions.shape))
+        #     print("[BC_CaMI DEBUG] target actions shape:", tuple(batch["actions"].shape))
 
-            if "pos_future_obs" in batch and all(
-                k in batch["pos_future_obs"] for k in ["force", "robot0_eef_pos", "robot0_eef_quat"]
-            ):
-                print("[BC_CaMI DEBUG] pos_future force shape:", tuple(batch["pos_future_obs"]["force"].shape))
-                print("[BC_CaMI DEBUG] pos_future eef_pos shape:", tuple(batch["pos_future_obs"]["robot0_eef_pos"].shape))
-                print("[BC_CaMI DEBUG] pos_future eef_quat shape:", tuple(batch["pos_future_obs"]["robot0_eef_quat"].shape))
-                print("[BC_CaMI DEBUG] pos_snippet_feat shape:", tuple(predictions["pos_snippet_feat"].shape))
-                print("[BC_CaMI DEBUG] pos_key_embedding shape:", tuple(predictions["pos_key_embedding"].shape))
+        #     if "pos_future_obs" in batch and all(
+        #         k in batch["pos_future_obs"] for k in ["force", "robot0_eef_pos", "robot0_eef_quat"]
+        #     ):
+        #         print("[BC_CaMI DEBUG] pos_future force shape:", tuple(batch["pos_future_obs"]["force"].shape))
+        #         print("[BC_CaMI DEBUG] pos_future eef_pos shape:", tuple(batch["pos_future_obs"]["robot0_eef_pos"].shape))
+        #         print("[BC_CaMI DEBUG] pos_future eef_quat shape:", tuple(batch["pos_future_obs"]["robot0_eef_quat"].shape))
+        #         print("[BC_CaMI DEBUG] pos_snippet_feat shape:", tuple(predictions["pos_snippet_feat"].shape))
+        #         print("[BC_CaMI DEBUG] pos_key_embedding shape:", tuple(predictions["pos_key_embedding"].shape))
 
-            self._printed_cami_debug = True
+        #     self._printed_cami_debug = True
 
         return predictions
     
@@ -345,7 +374,14 @@ class BC_CaMI(BC):
                 "cami_avg_valid_negatives": valid_neg_count[valid_anchor_mask].float().mean(),
             }
 
-        return cami_loss, cami_info
+        # if not hasattr(self, "_printed_valid_neg_debug"):
+        #     print("[BC_CaMI DEBUG] valid_neg_count min/max:",
+        #         valid_neg_count.min().item(), valid_neg_count.max().item())
+        #     print("[BC_CaMI DEBUG] valid_anchor_mask sum:",
+        #         valid_anchor_mask.sum().item())
+        #     self._printed_valid_neg_debug = True
+
+            return cami_loss, cami_info
     
     def _compute_losses(self, predictions, batch):
         """
@@ -369,6 +405,7 @@ class BC_CaMI(BC):
         bc_action_loss = sum(action_losses)
         losses["bc_action_loss"] = bc_action_loss
 
+
         # Contact-aware CaMI in-batch InfoNCE
         if (
             getattr(self.algo_config.cami, "enabled", False)
@@ -385,12 +422,13 @@ class BC_CaMI(BC):
                 contact_label=contact_label,
             )
 
-            if not hasattr(self, "_printed_contact_debug"):
-                print("[BC_CaMI DEBUG] contact_label shape:", tuple(contact_label.shape))
-                print("[BC_CaMI DEBUG] unique contact labels:", torch.unique(contact_label))
-                print("[BC_CaMI DEBUG] valid anchor fraction:", cami_info["cami_valid_anchor_fraction"].item())
-                print("[BC_CaMI DEBUG] avg valid negatives:", cami_info["cami_avg_valid_negatives"].item())
-                self._printed_contact_debug = True
+
+            # if not hasattr(self, "_printed_contact_debug"):
+            #     print("[BC_CaMI DEBUG] contact_label shape:", tuple(contact_label.shape))
+            #     print("[BC_CaMI DEBUG] unique contact labels:", torch.unique(contact_label))
+            #     print("[BC_CaMI DEBUG] valid anchor fraction:", cami_info["cami_valid_anchor_fraction"].item())
+            #     print("[BC_CaMI DEBUG] avg valid negatives:", cami_info["cami_avg_valid_negatives"].item())
+            #     self._printed_contact_debug = True
             losses["cami_loss"] = cami_loss
 
             for k, v in cami_info.items():
@@ -422,10 +460,10 @@ class BC_CaMI(BC):
         """
         info = OrderedDict()
 
-        if not hasattr(self, "_printed_optimizer_debug"):
-            print("self.nets keys:", list(self.nets.keys()))
-            print("self.optimizers keys:", list(self.optimizers.keys()))
-            self._printed_optimizer_debug = True
+        # if not hasattr(self, "_printed_optimizer_debug"):
+        #     print("self.nets keys:", list(self.nets.keys()))
+        #     print("self.optimizers keys:", list(self.optimizers.keys()))
+        #     self._printed_optimizer_debug = True
 
         trainable_names = ["policy", "query_proj", "snippet_encoder", "key_proj"]
 
@@ -539,25 +577,25 @@ class BC_CaMI(BC):
         Get policy action outputs.
         """
         assert not self.nets.training
+
+        # Build force if rollout env didn't provide it directly
         if "force" not in obs_dict:
             if ("robot0_ee_force" in obs_dict) and ("robot0_ee_torque" in obs_dict):
                 obs_dict = dict(obs_dict)
-                obs_dict["force"] = 1000.0 * torch.cat(
+                obs_dict["force"] = torch.cat(
                     [obs_dict["robot0_ee_force"], obs_dict["robot0_ee_torque"]],
                     dim=-1,
                 )
+            else:
+                print("[BC_CaMI DEBUG] force missing in rollout obs_dict")
+                print("[BC_CaMI DEBUG] available rollout keys:", list(obs_dict.keys()))
 
-                if not hasattr(self, "_printed_force_fallback_debug"):
-                    print("[FORCE FALLBACK DEBUG] robot0_ee_force shape:", tuple(obs_dict["robot0_ee_force"].shape))
-                    print("[FORCE FALLBACK DEBUG] robot0_ee_torque shape:", tuple(obs_dict["robot0_ee_torque"].shape))
-                    print("[FORCE FALLBACK DEBUG] constructed force shape:", tuple(obs_dict["force"].shape))
-                    self._printed_force_fallback_debug = True
-        
-        if not hasattr(self, "_printed_obs_shape_debug"):
-            print("[POLICY SHAPE DEBUG] expected obs_shapes:", self.obs_shapes)
-            for k, v in obs_dict.items():
-                if hasattr(v, "shape"):
-                    print(f"[POLICY SHAPE DEBUG] received {k}: {tuple(v.shape)}")
-            self._printed_obs_shape_debug = True
+        # Keep only the keys this policy was actually built with
+        expected_keys = list(self.obs_shapes.keys())
+        filtered_obs_dict = {k: obs_dict[k] for k in expected_keys if k in obs_dict}
 
-        return self.nets["policy"](obs_dict, goal_dict=goal_dict)
+        missing_keys = [k for k in expected_keys if k not in filtered_obs_dict]
+        if len(missing_keys) > 0:
+            raise KeyError(f"Missing required rollout observation keys: {missing_keys}")
+
+        return self.nets["policy"](filtered_obs_dict, goal_dict=goal_dict)

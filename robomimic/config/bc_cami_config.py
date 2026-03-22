@@ -25,7 +25,7 @@ class BCCaMIConfig(BCConfig):
         #     self.observation.modalities.obs.low_dim.append("force")
 
         self.observation.modalities.obs.rgb = ["agentview_image", "robot0_eye_in_hand_image"]
-        self.observation.modalities.obs.low_dim = ["robot0_eef_pos", "robot0_eef_quat", "force"]
+        self.observation.modalities.obs.low_dim = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos", "object", "force"],
 
         self.observation.modalities.goal.rgb = []
         self.observation.modalities.goal.low_dim = []
@@ -47,6 +47,7 @@ class BCCaMIConfig(BCConfig):
         self.algo.cami.snippet_horizon = 10
         self.algo.cami.num_negatives = 1
         self.algo.cami.opposite_contact_negatives_only = True
+        self.algo.cami.contact_threshold = 10.0
 
         self.algo.cami.use_momentum_target = False
         self.algo.cami.target_tau = 0.005

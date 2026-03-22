@@ -12,7 +12,7 @@
         "save": {
             "enabled": true,
             "every_n_seconds": null,
-            "every_n_epochs": 1,
+            "every_n_epochs": 50,
             "epochs": [],
             "on_best_validation": false,
             "on_best_rollout_return": false,
@@ -28,9 +28,9 @@
         "video_skip": 5,
         "rollout": {
             "enabled": true,
-            "n": 1,
+            "n": 50,
             "horizon": 400,
-            "rate": 1,
+            "rate": 50,
             "warmstart": 0,
             "terminate_on_success": true
         },
@@ -42,7 +42,7 @@
         "output_dir": "../../bc_cami_trained_models",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
-        "hdf5_cache_mode": "all",
+        "hdf5_cache_mode": "low_dim",
         "hdf5_use_swmr": true,
         "hdf5_load_next_obs": false,
         "hdf5_normalize_obs": false,
@@ -67,7 +67,7 @@
         },
         "goal_mode": null,
         "cuda": true,
-        "batch_size": 100,
+        "batch_size": 32,
         "num_epochs": 2000,
         "seed": 1,
         "max_grad_norm": null
@@ -212,6 +212,7 @@
             "enabled": true,
             "loss_weight": 0.01,
             "temperature": 0.07,
+            "contact_threshold": 10.0,
             "loss_type": "paired_infonce",
             "snippet_horizon": 10,
             "num_negatives": 1,
@@ -250,7 +251,9 @@
                 "low_dim": [
                     "robot0_eef_pos",
                     "robot0_eef_quat",
-                    "force"
+                    "robot0_gripper_qpos",
+                    "object",
+                    "force"                
                 ],
                 "rgb": [
                     "agentview_image",

@@ -313,8 +313,28 @@ def run_rollout(
 
     ob_dict = env.reset()
     goal_dict = None
+
+    # HOTFIX: ensure BC_CaMI-required force key survives rollout wrappers
+    if "force" not in ob_dict:
+        try:
+            base_env = env
+            while hasattr(base_env, "env"):
+                base_env = base_env.env
+
+            F_raw, T_raw = base_env._read_raw_ft_sensor()
+
+            if getattr(base_env, "_bias_F_sensor", None) is None:
+                base_env._bias_F_sensor = F_raw.copy()
+                base_env._bias_T_sensor = T_raw.copy()
+
+            F = F_raw - base_env._bias_F_sensor
+            T = T_raw - base_env._bias_T_sensor
+
+            ob_dict["force"] = (base_env.ft_scale * np.concatenate([F, T], axis=0)).astype(np.float32)
+        except Exception as e:
+            print("[ROLLOUT HOTFIX DEBUG] failed to inject reset force:", e)
+
     if use_goals:
-        # retrieve goal from the environment
         goal_dict = env.get_goal()
 
     results = {}
@@ -335,6 +355,26 @@ def run_rollout(
 
             # play action
             ob_dict, r, done, _ = env.step(ac)
+
+            # HOTFIX: ensure BC_CaMI-required force key survives rollout wrappers after each step
+            if "force" not in ob_dict:
+                try:
+                    base_env = env
+                    while hasattr(base_env, "env"):
+                        base_env = base_env.env
+
+                    F_raw, T_raw = base_env._read_raw_ft_sensor()
+
+                    if getattr(base_env, "_bias_F_sensor", None) is None:
+                        base_env._bias_F_sensor = F_raw.copy()
+                        base_env._bias_T_sensor = T_raw.copy()
+
+                    F = F_raw - base_env._bias_F_sensor
+                    T = T_raw - base_env._bias_T_sensor
+
+                    ob_dict["force"] = (base_env.ft_scale * np.concatenate([F, T], axis=0)).astype(np.float32)
+                except Exception as e:
+                    print("[ROLLOUT HOTFIX DEBUG] failed to inject step force:", e)
 
             # render to screen
             if render:
