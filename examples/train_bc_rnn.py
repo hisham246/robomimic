@@ -24,6 +24,7 @@ import robomimic.utils.test_utils as TestUtils
 import robomimic.macros as Macros
 from robomimic.config import config_factory
 from robomimic.scripts.train import train
+import torch
 
 
 def robosuite_hyperparameters(config):
@@ -106,7 +107,7 @@ def robosuite_hyperparameters(config):
 
     ## learning config ##
     config.train.cuda = True                                    # try to use GPU (if present) or not
-    config.train.batch_size = 64                               # batch size
+    config.train.batch_size = 100                               # batch size
     config.train.num_epochs = 2000                              # number of training epochs
     config.train.seed = 1                                       # seed for training
 
@@ -460,7 +461,8 @@ if __name__ == "__main__":
     )
 
     # set torch device
-    device = TorchUtils.get_torch_device(try_to_use_cuda=config.train.cuda)
+    # device = TorchUtils.get_torch_device(try_to_use_cuda=config.train.cuda)
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
     # run training
     train(config, device=device)
