@@ -76,7 +76,9 @@ def robosuite_hyperparameters(config):
     # by far the fastest for data loading. Set to "low_dim" to cache all non-image data. Set
     # to None to use no caching - in this case, every batch sample is retrieved via file i/o.
     # You should almost never set this to None, even for large image datasets.
-    config.train.hdf5_cache_mode = "low_dim"
+    config.train.hdf5_cache_mode = "all"
+
+    # config.train.hdf5_cache_mode = "low_dim"
 
     config.train.hdf5_use_swmr = True                           # used for parallel data loading
 
