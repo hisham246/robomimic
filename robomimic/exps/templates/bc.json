@@ -6,7 +6,7 @@
         "logging": {
             "terminal_output_to_txt": true,
             "log_tb": false,
-            "log_wandb": true,
+            "log_wandb": false,
             "wandb_proj_name": "bc_rnn"
         },
         "save": {
@@ -28,9 +28,9 @@
         "video_skip": 5,
         "rollout": {
             "enabled": true,
-            "n": 50,
+            "n": 10,
             "horizon": 400,
-            "rate": 50,
+            "rate": 1,
             "warmstart": 0,
             "terminate_on_success": true
         },
@@ -67,7 +67,7 @@
         },
         "goal_mode": null,
         "cuda": true,
-        "batch_size": 100,
+        "batch_size": 32,
         "num_epochs": 2000,
         "seed": 1,
         "max_grad_norm": 1.0
@@ -180,9 +180,8 @@
                     "robot0_eef_pos",
                     "robot0_eef_quat",
                     "robot0_gripper_qpos",
-                    "object",
-                    "force"                
-                ],
+                    "object"
+                    ],
                 "rgb": ["agentview_image",
                     "robot0_eye_in_hand_image"],
                 "depth": [],

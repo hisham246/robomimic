@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 
 # Candidate paths based on the earlier conversation
 candidates = [
-    "/home/hisham246/uwaterloo/ME780_Collaborative_Robotics/robomimic_datasets/square/ph/image_224_square_force_v15.hdf5",
-    "/home/hisham246/uwaterloo/ME780_Collaborative_Robotics/robomimic_datasets/square/ph/image_224_square_v15.hdf5",
+    "/home/hisham246/uwaterloo/ME780_Collaborative_Robotics/robomimic_datasets/square/ph/image_84_square_force_v15.hdf5",
+    "/home/hisham246/uwaterloo/ME780_Collaborative_Robotics/robomimic_datasets/square/ph/image_84_square_v15.hdf5",
 ]
 
 dataset_path = None
@@ -22,7 +22,7 @@ if dataset_path is None:
 output_dir = "/home/hisham246/uwaterloo/ME780_Collaborative_Robotics/robomimic_datasets/square_episode_viz"
 os.makedirs(output_dir, exist_ok=True)
 
-demo_key = "demo_0"
+demo_key = "demo_100"
 contact_threshold = 10.0  # per user request
 
 with h5py.File(dataset_path, "r") as f:

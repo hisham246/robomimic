@@ -114,39 +114,57 @@ class DinoV2Core(EncoderCore):
         return z
  
  
+import torch
+import torch.nn as nn
+
+from robomimic.models.base_nets import EncoderCore
+
+
 class ForceEncoderCore(EncoderCore):
     """
-    MLP encoder for wrench input, shape [6].
+    Simple 3-layer MLP force encoder.
+
+    Intended to match the paper's description:
+    force input -> 3-layer MLP -> 64-D feature vector
+
+    Notes:
+    - Assumes input is a 1D wrench / force vector, e.g. shape [6]
+    - No final L2 normalization, since this is for policy conditioning
+      rather than a contrastive embedding by default
+    - Hidden sizes are chosen reasonably because the paper text
+      specifies the 3-layer MLP and 64-D output, but not hidden widths
     """
- 
+
     def __init__(
         self,
         input_shape,
-        feature_dimension=128,
-        hidden_dims=(128, 128),
+        feature_dimension=64,
+        hidden_dims=(64, 64),
     ):
         super().__init__(input_shape=input_shape)
-        self.feature_dimension = feature_dimension
- 
+
         assert len(input_shape) == 1, f"Expected force shape like [6], got {input_shape}"
+        assert len(hidden_dims) == 2, "For a 3-layer MLP, hidden_dims should contain exactly 2 values."
+
         in_dim = int(input_shape[0])
- 
-        layers = [nn.LayerNorm(in_dim)]
-        prev = in_dim
-        for h in hidden_dims:
-            layers += [nn.Linear(prev, h), nn.ReLU()]
-            prev = h
-        layers += [nn.Linear(prev, feature_dimension)]
- 
-        self.net = nn.Sequential(*layers)
- 
+        h1, h2 = hidden_dims
+
+        self.feature_dimension = feature_dimension
+
+        self.net = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, h1),
+            nn.ReLU(),
+            nn.Linear(h1, h2),
+            nn.ReLU(),
+            nn.Linear(h2, feature_dimension),
+        )
+
     def output_shape(self, input_shape=None):
         return [self.feature_dimension]
- 
+
     def forward(self, inputs):
-        z = self.net(inputs.float())
-        z = F.normalize(z, dim=-1)
-        return z
+        return self.net(inputs.float())
  
 # we could use DINOv2 since it does better than CLIP, and a force encoder via an MLP
  

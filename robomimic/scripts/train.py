@@ -26,6 +26,7 @@ import sys
 import socket
 import traceback
 from datetime import datetime
+import h5py
 
 from collections import OrderedDict
 
@@ -41,6 +42,20 @@ import robomimic.utils.file_utils as FileUtils
 from robomimic.config import config_factory
 from robomimic.algo import algo_factory, RolloutPolicy
 from robomimic.utils.log_utils import PrintLogger, DataLogger, flush_warnings
+from robomimic.CAMI.force_modality import ForceModality
+from robomimic.CAMI.force_encoder import ForceEncoderCore
+
+def compute_force_stats(hdf5_path):
+    all_force = []
+    with h5py.File(hdf5_path, "r") as f:
+        demos = list(f["data"].keys())
+        for demo in demos:
+            force = f[f"data/{demo}/obs/force"][()]
+            all_force.append(force)
+    all_force = np.concatenate(all_force, axis=0)  # [N, D]
+    mean = all_force.mean(axis=0)
+    std = np.maximum(all_force.std(axis=0), 1e-6)
+    return mean, std
 
 
 def train(config, device, resume=False):
@@ -68,6 +83,14 @@ def train(config, device, resume=False):
         logger = PrintLogger(os.path.join(log_dir, 'log.txt'))
         sys.stdout = logger
         sys.stderr = logger
+
+    if isinstance(config.train.data, str):
+        with config.values_unlocked():
+            config.train.data = [{"path": config.train.data}]
+
+    train_dataset_path = config.train.data[0]["path"]
+    force_mean, force_std = compute_force_stats(train_dataset_path)
+    ForceModality.set_normalization_stats(force_mean, force_std, clip=5.0)
 
     # read config to set up metadata for observation modalities (e.g. detecting rgb observations)
     ObsUtils.initialize_obs_utils_with_config(config)
@@ -486,6 +509,27 @@ def main(args):
 
     if args.name is not None:
         config.experiment.name = args.name
+
+    # ------------------------------------------------------------------
+    # Inject custom force modality / encoder BEFORE config.lock()
+    # ------------------------------------------------------------------
+    with config.values_unlocked():
+        # remove "force" from low_dim if it is there
+        if "force" in config.observation.modalities.obs.low_dim:
+            config.observation.modalities.obs.low_dim.remove("force")
+
+        # create a separate force modality branch
+        config.observation.modalities.obs.force = ["force"]
+        config.observation.modalities.goal.force = []
+
+        # create encoder config for force modality
+        config.observation.encoder.force.core_class = "ForceEncoderCore"
+        config.observation.encoder.force.core_kwargs = {
+            "feature_dimension": 64,
+        }
+        config.observation.encoder.force.obs_randomizer_class = None
+        config.observation.encoder.force.obs_randomizer_kwargs = {}
+
 
     # get torch device
     device = TorchUtils.get_torch_device(try_to_use_cuda=config.train.cuda)
