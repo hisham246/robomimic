@@ -1,0 +1,145 @@
+[robosuite WARNING] No private macro file found! (macros.py:58)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:59)
+[robosuite WARNING] To setup, run: python /home/hisham246/uwaterloo/ME780_Collaborative_Robotics/robosuite/robosuite/scripts/setup_macros.py (macros.py:60)
+[DEBUG] observation modalities: {
+    "obs": {
+        "low_dim": [
+            "robot0_eef_pos",
+            "robot0_eef_quat",
+            "robot0_gripper_qpos",
+            "object"
+        ],
+        "rgb": [
+            "agentview_image",
+            "robot0_eye_in_hand_image"
+        ],
+        "depth": [],
+        "scan": [],
+        "force": [
+            "force"
+        ]
+    },
+    "goal": {
+        "low_dim": [],
+        "rgb": [],
+        "depth": [],
+        "scan": [],
+        "force": []
+    }
+}
+[DEBUG] all obs keys: ['agentview_image', 'force', 'object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_eye_in_hand_image', 'robot0_gripper_qpos']
+[DEBUG] encoder config: {
+    "low_dim": {
+        "core_class": null,
+        "core_kwargs": {},
+        "obs_randomizer_class": null,
+        "obs_randomizer_kwargs": {}
+    },
+    "rgb": {
+        "core_class": "VisualCore",
+        "core_kwargs": {},
+        "obs_randomizer_class": "CropRandomizer",
+        "obs_randomizer_kwargs": {
+            "crop_height": 76,
+            "crop_width": 76,
+            "num_crops": 1,
+            "pos_enc": false
+        }
+    },
+    "depth": {
+        "core_class": "VisualCore",
+        "core_kwargs": {},
+        "obs_randomizer_class": null,
+        "obs_randomizer_kwargs": {}
+    },
+    "scan": {
+        "core_class": "ScanCore",
+        "core_kwargs": {},
+        "obs_randomizer_class": null,
+        "obs_randomizer_kwargs": {}
+    },
+    "force": {
+        "core_class": "ForceEncoderCore",
+        "core_kwargs": {
+            "feature_dimension": 64
+        },
+        "obs_randomizer_class": null,
+        "obs_randomizer_kwargs": {}
+    }
+}
+[DEBUG] train_dataset_path: /home/hisham246/uwaterloo/ME780_Collaborative_Robotics/robomimic_datasets/square/ph/image_84_square_force_v15.hdf5
+[DEBUG] Force mean: [ 0.78647125  0.01486782 11.337612   -0.530241    0.2274933   0.02228419]
+[DEBUG] Force std : [ 6.4650083   6.356693   25.984388    0.95017046  1.7152518   0.43616322]
+Created environment with name NutAssemblySquare
+Action size is 7
+============= Loaded Environment =============
+NutAssemblySquare
+{
+    "camera_depths": false,
+    "camera_heights": 84,
+    "camera_names": [
+        "agentview",
+        "robot0_eye_in_hand"
+    ],
+    "camera_widths": 84,
+    "control_freq": 20,
+    "controller_configs": {
+        "body_parts": {
+            "right": {
+                "control_delta": true,
+                "damping": 1,
+                "damping_limits": [
+                    0,
+                    10
+                ],
+                "gripper": {
+                    "type": "GRIP"
+                },
+                "impedance_mode": "fixed",
+                "input_max": 1,
+                "input_min": -1,
+                "input_ref_frame": "world",
+                "interpolation": null,
+                "kp": 150,
+                "kp_limits": [
+                    0,
+                    300
+                ],
+                "orientation_limits": null,
+                "output_max": [
+                    0.05,
+                    0.05,
+                    0.05,
+                    0.5,
+                    0.5,
+                    0.5
+                ],
+                "output_min": [
+                    -0.05,
+                    -0.05,
+                    -0.05,
+                    -0.5,
+                    -0.5,
+                    -0.5
+                ],
+                "position_limits": null,
+                "ramp_ratio": 0.2,
+                "type": "OSC_POSE",
+                "uncouple_pos_ori": true
+            }
+        },
+        "type": "BASIC"
+    },
+    "has_offscreen_renderer": true,
+    "has_renderer": false,
+    "ignore_done": true,
+    "lite_physics": false,
+    "render_gpu_device_id": 0,
+    "reward_shaping": false,
+    "robots": [
+        "Panda"
+    ],
+    "use_camera_obs": true,
+    "use_object_obs": true
+}
+[FORCE COMPARE] Saved comparison for demo_0 to /home/hisham246/uwaterloo/ME780_Collaborative_Robotics/models/force_compare_debug
