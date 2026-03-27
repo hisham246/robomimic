@@ -1,7 +1,7 @@
 {
     "algo_name": "bc",
     "experiment": {
-        "name": "vision_force",
+        "name": "vision_only",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
@@ -39,7 +39,7 @@
     },
     "train": {
         "data": null,
-        "output_dir": "../../bc_rnn_trained_models_2",
+        "output_dir": "../../bc_rnn_trained_models_tool_hang",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "all",
@@ -179,8 +179,7 @@
                 "low_dim": [
                     "robot0_eef_pos",
                     "robot0_eef_quat",
-                    "robot0_gripper_qpos",
-                    "object"
+                    "robot0_gripper_qpos"
                     ],
                 "rgb": ["agentview_image",
                     "robot0_eye_in_hand_image"],
