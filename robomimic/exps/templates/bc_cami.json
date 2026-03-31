@@ -1,7 +1,7 @@
 {
     "algo_name": "bc_cami",
     "experiment": {
-        "name": "cami_50_percent",
+        "name": "cami_25_percent",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
@@ -39,7 +39,7 @@
     },
     "train": {
         "data": null,
-        "output_dir": "../../bc_rnn_cami_50_percent",
+        "output_dir": "../../bc_rnn_cami_25_percent",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "low_dim",
