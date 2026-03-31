@@ -1,12 +1,12 @@
 {
     "algo_name": "bc_cami",
     "experiment": {
-        "name": "Test_BC_CaMI",
+        "name": "cami_50_percent",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
-            "log_tb": true,
-            "log_wandb": false,
+            "log_tb": false,
+            "log_wandb": true,
             "wandb_proj_name": "cami"
         },
         "save": {
@@ -39,7 +39,7 @@
     },
     "train": {
         "data": null,
-        "output_dir": "../../bc_cami_test_2",
+        "output_dir": "../../bc_rnn_cami_50_percent",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "low_dim",
