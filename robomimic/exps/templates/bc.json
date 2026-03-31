@@ -5,7 +5,7 @@
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
-            "log_tb": false,
+            "log_tb": true,
             "log_wandb": true,
             "wandb_proj_name": "bc_rnn"
         },
