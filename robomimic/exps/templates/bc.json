@@ -1,7 +1,7 @@
 {
     "algo_name": "bc",
     "experiment": {
-        "name": "vision_only_25_percent",
+        "name": "vision_only_100_percent_tool_hang",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
@@ -18,7 +18,7 @@
             "on_best_rollout_return": false,
             "on_best_rollout_success_rate": true
         },
-        "epoch_every_n_steps": 100,
+        "epoch_every_n_steps": 500,
         "validation_epoch_every_n_steps": 10,
         "env": null,
         "additional_envs": null,
@@ -29,7 +29,7 @@
         "rollout": {
             "enabled": true,
             "n": 50,
-            "horizon": 400,
+            "horizon": 700,
             "rate": 50,
             "warmstart": 0,
             "terminate_on_success": true
@@ -39,7 +39,7 @@
     },
     "train": {
         "data": null,
-        "output_dir": "../../bc_rnn_vision_only_25_percent",
+        "output_dir": "../../bc_rnn_vision_only_100_percent_tool_hang",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "low_dim",
@@ -67,7 +67,7 @@
         },
         "goal_mode": null,
         "cuda": true,
-        "batch_size": 100,
+        "batch_size": 16,
         "num_epochs": 2000,
         "seed": 1,
         "max_grad_norm": 1.0
@@ -182,7 +182,7 @@
                     "robot0_gripper_qpos",
                     "object"
                     ],
-                "rgb": ["agentview_image",
+                "rgb": ["sideview_image",
                     "robot0_eye_in_hand_image"],
                 "depth": [],
                 "scan": []
@@ -206,8 +206,8 @@
             "core_kwargs": {},
             "obs_randomizer_class": "CropRandomizer",
             "obs_randomizer_kwargs": {
-                "crop_height": 76, 
-                "crop_width": 76,
+                "crop_height": 216, 
+                "crop_width": 216,
                 "num_crops": 1,
                 "pos_enc": false
             }
