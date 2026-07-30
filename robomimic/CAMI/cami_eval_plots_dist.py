@@ -9,9 +9,11 @@ from pathlib import Path
 square_csv = Path("/home/hisham246/uwaterloo/ME780_Collaborative_Robotics/cami_eval_square/trial_results_square.csv")
 tool_csv = Path("/home/hisham246/uwaterloo/ME780_Collaborative_Robotics/cami_eval_tool_hang/trial_results_tool_hang.csv")
 
-# Optional save dir
-# out_dir = Path("/mnt/data/plots")
-# out_dir.mkdir(parents=True, exist_ok=True)
+# =========================================================
+# Output directory setup
+# =========================================================
+out_dir = Path("./plots")
+out_dir.mkdir(parents=True, exist_ok=True)
 
 # =========================================================
 # Global style
@@ -139,13 +141,14 @@ def make_data_reduction_line_plot(summary_df, task_title, filename=None):
 
     ax.set_xlabel("Training Data Fraction (%)")
     ax.set_ylabel("Success Rate (%)")
-    ax.set_title(task_title, pad=12)
+    ax.set_title(task_title, pad=24)
     ax.set_ylim(0, 100)
     ax.legend(frameon=False, loc="best")
 
     plt.tight_layout()
 
     if filename is not None:
+        print(f"Saving figure to: {filename}")
         plt.savefig(filename, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
 
     plt.show()
@@ -183,55 +186,128 @@ def make_full_data_box_plot(df, task_title, filename=None):
     ax.scatter(x2, cami_vals, s=45, color="black", alpha=0.7, zorder=3)
 
     ax.set_ylabel("Success Rate (%)")
-    ax.set_title(task_title, pad=12)
+    ax.set_title(task_title, pad=24)
 
-    # adaptive y-axis
-    all_vals = np.concatenate([bc_vals, cami_vals])
-    ymin = np.floor(all_vals.min() - 5)
-    ymax = np.ceil(all_vals.max() + 5)
-    ax.set_ylim(ymin, ymax)
+    # Set fixed y-axis from 0 to 100
+    ax.set_ylim(0, 100)
 
     plt.tight_layout()
 
     if filename is not None:
+        print(f"Saving figure to: {filename}")
         plt.savefig(filename, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
 
     plt.show()
 
-# =========================================================
-# Load data
-# =========================================================
-square_df = preprocess(pd.read_csv(square_csv), task_name="square")
-tool_df = preprocess(pd.read_csv(tool_csv), task_name="tool_hang")
 
-square_summary = compute_summary(square_df)
-tool_summary = compute_summary(tool_df)
+def make_full_data_bar_plot(df, task_title, filename=None):
+    fig, ax = plt.subplots(figsize=(6.5, 5.2))
+    apply_common_style(ax)
 
-print("Square summary:")
-print(square_summary.to_string(index=False))
-print()
-print("Tool-hang summary:")
-print(tool_summary.to_string(index=False))
+    full_df = df[df["fraction"] == 100].copy()
 
-# =========================================================
-# Plots
-# =========================================================
-make_data_reduction_line_plot(
-    square_summary,
-    "Square Task: Effect of Training Data Reduction"
-)
+    methods = ["BC-RNN", "BC-RNN-CaMI (Ours)"]
+    colors = [BC_COLOR, CAMI_COLOR]
+    labels = ["BC-RNN", "BC-RNN-CaMI\n(Ours)"]
 
-make_data_reduction_line_plot(
-    tool_summary,
-    "Tool-Hang Task: Effect of Training Data Reduction"
-)
+    means = []
+    stds = []
 
-make_full_data_box_plot(
-    square_df,
-    "Square Task: Rollout Performance at 100% Data"
-)
+    for method in methods:
+        vals = full_df[full_df["method"] == method]["success_percent"]
+        means.append(vals.mean())
+        stds.append(vals.std())
 
-make_full_data_box_plot(
-    tool_df,
-    "Tool-Hang Task: Rollout Performance at 100% Data"
-)
+    x_pos = np.arange(len(methods))
+
+    ax.bar(
+        x_pos, 
+        means, 
+        yerr=stds, 
+        color=colors, 
+        alpha=0.85, 
+        edgecolor="black", 
+        linewidth=2,
+        capsize=8,
+        error_kw=dict(linewidth=2, capthick=2),
+        width=0.55
+    )
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(labels)
+
+    ax.set_ylabel("Success Rate (%)")
+    ax.set_title(task_title, pad=24)
+    ax.set_ylim(0, 100)
+
+    plt.tight_layout()
+
+    if filename is not None:
+        print(f"Saving figure to: {filename}")
+        plt.savefig(filename, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
+
+    plt.show()
+
+if __name__ == "__main__":
+    try:
+        # =========================================================
+        # Load data
+        # =========================================================
+        square_df = preprocess(pd.read_csv(square_csv), task_name="square")
+        tool_df = preprocess(pd.read_csv(tool_csv), task_name="tool_hang")
+
+        square_summary = compute_summary(square_df)
+        tool_summary = compute_summary(tool_df)
+
+        print("Square summary:")
+        print(square_summary.to_string(index=False))
+        print()
+        print("Tool-hang summary:")
+        print(tool_summary.to_string(index=False))
+
+        # =========================================================
+        # Plots
+        # =========================================================
+        # 1. Line Plots
+        make_data_reduction_line_plot(
+            square_summary,
+            "Square Task: Effect of Training Data Reduction",
+            filename=out_dir / "square_data_reduction_line.pdf"
+        )
+
+        make_data_reduction_line_plot(
+            tool_summary,
+            "Tool-Hang Task: Effect of Training Data Reduction",
+            filename=out_dir / "tool_hang_data_reduction_line.pdf"
+        )
+
+        # 2. Box Plots
+        make_full_data_box_plot(
+            square_df,
+            "Square Task: Rollout Performance at 100% Data",
+            filename=out_dir / "square_100_percent_box.pdf"
+        )
+
+        make_full_data_box_plot(
+            tool_df,
+            "Tool-Hang Task: Rollout Performance at 100% Data",
+            filename=out_dir / "tool_hang_100_percent_box.pdf"
+        )
+
+        # 3. Bar Plots
+        make_full_data_bar_plot(
+            square_df,
+            "Square Task: Rollout Performance at 100% Data",
+            filename=out_dir / "square_100_percent_bar.pdf"
+        )
+
+        make_full_data_bar_plot(
+            tool_df,
+            "Tool-Hang Task: Rollout Performance at 100% Data",
+            filename=out_dir / "tool_hang_100_percent_bar.pdf"
+        )
+        
+        print(f"\nAll figures successfully saved to '{out_dir.absolute()}' directory.")
+        
+    except FileNotFoundError as e:
+        print(f"File not found error: {e}. Please ensure the CSV paths are correct on your system.")
