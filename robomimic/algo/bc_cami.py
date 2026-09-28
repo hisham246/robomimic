@@ -26,6 +26,7 @@ target encoder.
 
 from collections import OrderedDict
 import copy
+import math
 
 import torch
 import torch.nn as nn
@@ -69,6 +70,95 @@ class BC_CaMI(BC_RNN):
     """
 
     def _create_networks(self):
+    # Continuous CaMI uses the recorded force only during training.
+    # Validate the configuration before constructing any networks so
+    # incorrect parameters fail immediately instead of during training.
+    continuous_contact_enabled = (
+        self.algo_config.cami
+        .get("continuous_contact", {})
+        .get("enabled", False)
+    )
+
+    if continuous_contact_enabled:
+        continuous_config = (
+            self.algo_config.cami.continuous_contact
+        )
+
+        # Each of these parameters appears in a denominator,
+        # threshold, or exponent. Zero, negative, NaN, or infinite
+        # values would make the force comparison invalid.
+        parameters_that_must_be_positive = (
+            "force_scale",
+            "huber_delta",
+            "contact_temperature",
+            "gamma",
+        )
+
+        for parameter_name in parameters_that_must_be_positive:
+            parameter_value = float(
+                continuous_config[parameter_name]
+            )
+
+            if (
+                not math.isfinite(parameter_value)
+                or parameter_value <= 0
+            ):
+                raise ValueError(
+                    "continuous_contact.{} must be finite "
+                    "and positive".format(parameter_name)
+                )
+
+        # A stacked observation does not have a simple one-to-one
+        # alignment with the future force window. This implementation
+        # therefore requires one observation frame per timestep.
+        if self.global_config.train.frame_stack != 1:
+            raise ValueError(
+                "Force-weighted CaMI requires frame_stack=1 "
+                "for aligned future windows"
+            )
+
+        # Sequence index zero is the current anchor timestep.
+        # Indices 1 through H contain the future action and force
+        # sequence used by the CaMI objective.
+        required_sequence_length = (
+            self.algo_config.cami.snippet_horizon + 1
+        )
+
+        if (
+            self.global_config.train.seq_length
+            < required_sequence_length
+        ):
+            raise ValueError(
+                "seq_length must be at least "
+                "snippet_horizon + 1"
+            )
+
+        # Force is loaded as an auxiliary dataset tensor.
+        # It must therefore appear in train.dataset_keys.
+        if (
+            continuous_config.force_dataset_key
+            not in self.global_config.train.dataset_keys
+        ):
+            raise ValueError(
+                "Add {} to train.dataset_keys".format(
+                    continuous_config.force_dataset_key
+                )
+            )
+
+        force_observation_name = (
+            continuous_config.force_dataset_key
+            .split("/", 1)[-1]
+        )
+
+        # Force is privileged supervision for the loss.
+        # It must not appear in the observation shapes used to
+        # construct the policy network.
+        if force_observation_name in self.obs_shapes:
+            raise ValueError(
+                "Privileged force must not be a policy "
+                "observation"
+            )
+
         super(BC_CaMI, self)._create_networks()
 
         contrastive_dim = self.algo_config.cami.contrastive_dim
@@ -125,63 +215,241 @@ class BC_CaMI(BC_RNN):
         self.nets = self.nets.float().to(self.device)
 
     def process_batch_for_training(self, batch):
-        """
-        Keep BC_RNN-compatible full sequences.
+    """
+    Prepare a batch for BC-RNN and CaMI training.
 
-        Force is NOT used as a policy observation.
-        Contact labels are expected to be precomputed offline and stored in the batch
-        (either as batch["contact_label"] or batch["obs"]["contact_label"]).
-        """
-        input_batch = dict()
-        input_batch["goal_obs"] = batch.get("goal_obs", None)
-        input_batch["actions"] = batch["actions"]
+    Binary CaMI reads a precomputed binary contact label.
 
-        # Read precomputed contact label only
-        if "contact_label" in batch:
-            cl = batch["contact_label"]
-        elif "contact_label" in batch["obs"]:
-            cl = batch["obs"]["contact_label"]
-        else:
-            cl = None
+    Continuous CaMI reads a synchronized force or wrench sequence
+    from the HDF5 dataset. Force is used only to construct the
+    contrastive loss and is not passed into the policy.
+    """
+    input_batch = {}
 
-        if cl is None:
+    # These are the normal inputs used by the existing BC-RNN
+    # training pipeline.
+    input_batch["goal_obs"] = batch.get(
+        "goal_obs",
+        None,
+    )
+    input_batch["actions"] = batch["actions"]
+
+    continuous_contact_enabled = (
+        self.algo_config.cami
+        .get("continuous_contact", {})
+        .get("enabled", False)
+    )
+
+    if continuous_contact_enabled:
+        force_dataset_key = (
+            self.algo_config
+            .cami
+            .continuous_contact
+            .force_dataset_key
+        )
+
+        # SequenceDataset loads HDF5-relative dataset keys such as
+        # "obs/force". Loading force this way makes it available to
+        # the loss without adding it to the policy observations.
+        if force_dataset_key not in batch:
             raise KeyError(
-                "Missing contact_label in batch. "
-                "For privileged-force CaMI, precompute contact_label offline and store it in the dataset."
+                "Missing stored wrench at batch[{!r}]. "
+                "Add it to train.dataset_keys.".format(
+                    force_dataset_key
+                )
             )
 
-        # Robust squeeze to [B]
-        if cl.ndim > 1:
-            cl = cl[:, 0]
-        if cl.ndim > 1:
-            cl = cl.squeeze(-1)
+        wrench = batch[force_dataset_key]
 
-        input_batch["contact_label"] = cl.float()
+        # Expected layouts:
+        #
+        # [B,T,3] = Fx, Fy, Fz
+        # [B,T,6] = Fx, Fy, Fz, Tx, Ty, Tz
+        #
+        # Only the first three translational-force channels are used.
+        # Force and torque cannot be combined directly because they
+        # have different physical units.
+        if (
+            wrench.ndim != 3
+            or wrench.shape[-1] not in (3, 6)
+        ):
+            raise ValueError(
+                "Stored wrench must have shape [B,T,3] "
+                "or [B,T,6], with Fx,Fy,Fz first"
+            )
 
-        # Policy obs must stay clean: exclude force and contact_label
+        # The force, action, and observation at timestep t must all
+        # refer to the same simulator state.
+        if (
+            wrench.shape[:2]
+            != batch["actions"].shape[:2]
+        ):
+            raise ValueError(
+                "Wrench and action sequences must be "
+                "synchronized and have equal lengths"
+            )
+
+        expected_padding_mask_shape = (
+            wrench.shape[:2] + (1,)
+        )
+
+        # Robomimic pads short sequences by repeating boundary
+        # samples. The padding mask distinguishes those repeated
+        # values from real force measurements.
+        if (
+            "pad_mask" not in batch
+            or batch["pad_mask"].shape
+            != expected_padding_mask_shape
+        ):
+            raise ValueError(
+                "Continuous CaMI requires SequenceDataset "
+                "get_pad_mask=True"
+            )
+
+        snippet_horizon = (
+            self.algo_config.cami.snippet_horizon
+        )
+
+        # The batch must contain the current anchor at index zero
+        # followed by H future timesteps.
+        if wrench.shape[1] < snippet_horizon + 1:
+            raise ValueError(
+                "Batch must contain the anchor plus "
+                "snippet_horizon future timesteps"
+            )
+
+        # The existing action-snippet encoder uses actions from
+        # t+1 through t+H. Select force at those exact timesteps so
+        # the physical signal and action snippet remain aligned.
+        #
+        # Resulting shape: [B,H,3]
+        input_batch["force_sequence"] = (
+            wrench[
+                :,
+                1:snippet_horizon + 1,
+                :3,
+            ].detach()
+        )
+
+        # Resulting shape: [B,H]
+        #
+        # True means the corresponding force sample came from the
+        # demonstration. False means Robomimic generated it through
+        # sequence padding.
+        input_batch["force_valid"] = (
+            batch["pad_mask"][
+                :,
+                1:snippet_horizon + 1,
+                0,
+            ].bool()
+        )
+
+        # self.obs_shapes contains only the observations declared
+        # as policy inputs. Selecting from that collection prevents
+        # the auxiliary force key from entering the policy encoder.
         input_batch["obs"] = {
-            k: batch["obs"][k]
-            for k in batch["obs"]
-            if k not in ["force", "contact_label"]
+            observation_name: batch["obs"][
+                observation_name
+            ]
+            for observation_name in self.obs_shapes
         }
 
-        if not hasattr(self, "_debug_printed_contact_stats"):
-            self._debug_printed_contact_stats = False
+        return TensorUtils.to_float(
+            TensorUtils.to_device(
+                input_batch,
+                self.device,
+            )
+        )
 
-        if not self._debug_printed_contact_stats:
-            print("\n[BC_CaMI DEBUG] process_batch_for_training")
-            print("  actions shape                :", tuple(batch["actions"].shape))
-            print("  contact_label shape          :", tuple(input_batch["contact_label"].shape))
-            print("  contact_label dtype          :", input_batch["contact_label"].dtype)
-            print("  contact_label unique/counts  :",
-                torch.unique(input_batch["contact_label"], return_counts=True))
-            print("  contact positive fraction    :",
-                input_batch["contact_label"].float().mean().item())
-            print("  policy obs keys              :", list(input_batch["obs"].keys()))
-            self._debug_printed_contact_stats = True
+    # This is Hisham's original binary CaMI path.
+    if "contact_label" in batch:
+        contact_label = batch["contact_label"]
+    elif "contact_label" in batch["obs"]:
+        contact_label = batch["obs"]["contact_label"]
+    else:
+        contact_label = None
 
-        return TensorUtils.to_float(TensorUtils.to_device(input_batch, self.device))
-    
+    if contact_label is None:
+        raise KeyError(
+            "Missing contact_label in batch"
+        )
+
+    # Convert [B,T], [B,T,1], or [B,1] into one label for
+    # each sampled anchor.
+    if contact_label.ndim > 1:
+        contact_label = contact_label[:, 0]
+
+    if contact_label.ndim > 1:
+        contact_label = contact_label.squeeze(-1)
+
+    input_batch["contact_label"] = (
+        contact_label.float()
+    )
+
+    # Keep physical supervision out of policy inputs in binary
+    # mode as well.
+    excluded_policy_keys = {
+        "force",
+        "force_rawbias",
+        "force_obsbias",
+        "contact_label",
+    }
+
+    input_batch["obs"] = {
+        observation_name: observation
+        for observation_name, observation
+        in batch["obs"].items()
+        if observation_name
+        not in excluded_policy_keys
+    }
+
+    # Print the binary-label distribution once. This helps detect
+    # datasets containing only one class, which would provide no
+    # opposite-contact negatives.
+    if not hasattr(
+        self,
+        "_debug_printed_contact_stats",
+    ):
+        self._debug_printed_contact_stats = False
+
+    if not self._debug_printed_contact_stats:
+        print(
+            "\n[BC_CaMI DEBUG] "
+            "process_batch_for_training"
+        )
+        print(
+            "  actions shape:",
+            tuple(batch["actions"].shape),
+        )
+        print(
+            "  contact_label shape:",
+            tuple(
+                input_batch[
+                    "contact_label"
+                ].shape
+            ),
+        )
+        print(
+            "  contact_label unique/counts:",
+            torch.unique(
+                input_batch["contact_label"],
+                return_counts=True,
+            ),
+        )
+        print(
+            "  policy obs keys:",
+            list(input_batch["obs"].keys()),
+        )
+
+        self._debug_printed_contact_stats = True
+
+    return TensorUtils.to_float(
+        TensorUtils.to_device(
+            input_batch,
+            self.device,
+        )
+    )
+
     def train_on_batch(self, batch, epoch, validate=False):
         """
         Run BC_RNN train step, then update target encoders.
@@ -379,108 +647,684 @@ class BC_CaMI(BC_RNN):
 
         return actions, feats
 
-    def _compute_contact_inbatch_cami_loss(self, query_embedding, key_embedding, contact_label):
-        """
-        Contact-aware InfoNCE:
+    def _compute_contact_inbatch_cami_loss(
+    self,
+    query_embedding,
+    key_embedding,
+    contact_label,
+    force_sequence=None,
+    force_valid=None,
+):
+    """
+    Calculate contact-aware in-batch InfoNCE.
 
-            L_i = -log exp(q_i·k_i / beta)
-                       ---------------------------------------------
-                       exp(q_i·k_i / beta) + sum_{j in N_i} exp(q_i·k_j / beta)
+    Binary mode:
+        A pair is a negative when its binary contact labels differ.
 
-        where N_i = {j | k_j != k_i}
-        """
-        beta = self.algo_config.cami.temperature
+    Continuous mode:
+        A pair receives a continuous negative weight based on the
+        Huber distance between its future force-magnitude sequences.
 
-        normalize_embeddings = (
-            self.algo_config.cami.normalize_embeddings
-            if "normalize_embeddings" in self.algo_config.cami
-            else False
+    The paired item at index i remains the positive for anchor i.
+    """
+    embedding_temperature = (
+        self.algo_config.cami.temperature
+    )
+
+    normalize_embeddings = (
+        self.algo_config.cami.normalize_embeddings
+        if "normalize_embeddings"
+        in self.algo_config.cami
+        else False
+    )
+
+    # Cosine-style similarity is obtained by normalizing before
+    # taking the dot product.
+    if normalize_embeddings:
+        query_embedding = F.normalize(
+            query_embedding,
+            dim=-1,
         )
-        if normalize_embeddings:
-            query_embedding = F.normalize(query_embedding, dim=-1)
-            key_embedding = F.normalize(key_embedding, dim=-1)
-
-        contact_label = contact_label.long().view(-1)
-        B = query_embedding.shape[0]
-
-        logits = torch.matmul(query_embedding, key_embedding.T) / beta
-        pos_logits = logits.diag()
-
-        neg_mask = contact_label.unsqueeze(1) != contact_label.unsqueeze(0)
-        valid_neg_count = neg_mask.sum(dim=1)
-        valid_anchor_mask = valid_neg_count > 0
-
-        if not hasattr(self, "_debug_printed_neg_stats"):
-            self._debug_printed_neg_stats = False
-
-        if not self._debug_printed_neg_stats:
-            print("\n[BC_CaMI DEBUG] _compute_contact_inbatch_cami_loss")
-            print("  contact_label unique/counts :", torch.unique(contact_label, return_counts=True))
-            print("  valid_neg_count min/max/mean:",
-                valid_neg_count.min().item(),
-                valid_neg_count.max().item(),
-                valid_neg_count.float().mean().item())
-            print("  valid_anchor_fraction       :", valid_anchor_mask.float().mean().item())
-            self._debug_printed_neg_stats = True
-
-        if valid_anchor_mask.sum() == 0:
-            zero = logits.sum() * 0.0
-            info = {
-                "valid_anchor_count": zero.detach(),
-                "valid_anchor_fraction": zero.detach(),
-                "pos_logit_mean": zero.detach(),
-                "neg_logit_mean": zero.detach(),
-                "retrieval_acc": zero.detach(),
-                "avg_valid_negatives": zero.detach(),
-                "soft_scale_mean": zero.detach(),
-            }
-            return zero, info
-
-        neg_logits_masked = logits.masked_fill(~neg_mask, float("-inf"))
-        denom_inputs = torch.cat([pos_logits.unsqueeze(1), neg_logits_masked], dim=1)
-        log_denom = torch.logsumexp(denom_inputs, dim=1)
-        per_anchor_loss = -(pos_logits - log_denom)
-
-        soft_scale_mean = torch.zeros((), device=query_embedding.device)
-        soft_variant = (
-            self.algo_config.cami.soft_variant
-            if "soft_variant" in self.algo_config.cami
-            else False
+        key_embedding = F.normalize(
+            key_embedding,
+            dim=-1,
         )
 
-        if soft_variant:
-            scales = torch.ones(B, device=query_embedding.device, dtype=query_embedding.dtype)
-            for i in range(B):
-                if valid_anchor_mask[i]:
-                    e_pos_i = key_embedding[i]
-                    e_neg_i = key_embedding[neg_mask[i]]
-                    dist_mean = torch.norm(e_pos_i.unsqueeze(0) - e_neg_i, dim=1).mean()
-                    scales[i] = torch.clamp(dist_mean, min=1.0)
-            per_anchor_loss = per_anchor_loss * scales
-            soft_scale_mean = scales[valid_anchor_mask].mean()
+    batch_size = query_embedding.shape[0]
 
-        loss = per_anchor_loss[valid_anchor_mask].mean()
+    # s_ij = q_i^T k_j / beta
+    #
+    # Shape: [B,B]
+    similarity_logits = (
+        torch.matmul(
+            query_embedding,
+            key_embedding.T,
+        )
+        / embedding_temperature
+    )
 
-        with torch.no_grad():
-            valid_pos_logits = pos_logits[valid_anchor_mask]
-            pos_logit_mean = valid_pos_logits.mean()
-            neg_logit_mean = logits[neg_mask].mean() if neg_mask.any() else torch.zeros((), device=logits.device)
-            max_neg_logits = neg_logits_masked.max(dim=1).values
-            retrieval_acc = (
-                (pos_logits[valid_anchor_mask] > max_neg_logits[valid_anchor_mask]).float().mean()
+    # The diagonal represents the paired positive:
+    # q_i matched with k_i.
+    positive_logits = (
+        similarity_logits.diag()
+    )
+
+    continuous_contact_enabled = (
+        self.algo_config.cami
+        .get("continuous_contact", {})
+        .get("enabled", False)
+    )
+
+    negative_weights = None
+
+    if continuous_contact_enabled:
+        continuous_config = (
+            self.algo_config
+            .cami
+            .continuous_contact
+        )
+
+        # force_sequence: [B,H,3]
+        # force_valid:    [B,H]
+        invalid_force_input = (
+            force_sequence is None
+            or force_valid is None
+            or force_sequence.ndim != 3
+            or force_sequence.shape[0]
+            != batch_size
+            or force_sequence.shape[2] != 3
+            or force_valid.shape
+            != force_sequence.shape[:2]
+        )
+
+        if invalid_force_input:
+            raise ValueError(
+                "Expected future force [B,H,3] "
+                "and validity [B,H]"
             )
 
-            info = {
-                "valid_anchor_count": valid_anchor_mask.float().sum(),
-                "valid_anchor_fraction": valid_anchor_mask.float().mean(),
-                "pos_logit_mean": pos_logit_mean,
-                "neg_logit_mean": neg_logit_mean,
-                "retrieval_acc": retrieval_acc,
-                "avg_valid_negatives": valid_neg_count[valid_anchor_mask].float().mean(),
-                "soft_scale_mean": soft_scale_mean.detach(),
-            }
+        # Force measurements determine which representation pairs
+        # are treated as strong or weak negatives. Gradients must
+        # update the learned embeddings, not the measurements.
+        with torch.no_grad():
+            valid_timesteps = (
+                force_valid.detach().bool()
+            )
+            force = (
+                force_sequence.detach().float()
+            )
 
-        return loss, info
+            # NaN or infinite measurements would propagate through
+            # the Huber distance and corrupt the entire batch loss.
+            if not torch.isfinite(
+                force[valid_timesteps]
+            ).all():
+                raise ValueError(
+                    "Recorded force contains "
+                    "nonfinite values"
+                )
+
+            # Padding is temporarily replaced with zero. It is also
+            # removed from the pairwise average below, so this zero
+            # never becomes a real observation.
+            force = force.masked_fill(
+                ~valid_timesteps[..., None],
+                0.0,
+            )
+
+            # Convert each three-dimensional force vector into a
+            # scalar magnitude:
+            #
+            # c_i,h = ||F_i,h||_2 / force_scale
+            #
+            # Dividing by force_scale makes huber_delta operate on
+            # normalized values rather than raw newtons.
+            normalized_force_magnitude = (
+                torch.linalg.vector_norm(
+                    force,
+                    dim=-1,
+                )
+                / continuous_config.force_scale
+            )
+
+            # Reshape through broadcasting:
+            #
+            # left:  [B,1,H]
+            # right: [1,B,H]
+            #
+            # The broadcasted tensors have shape [B,B,H], where
+            # entry (i,j,h) compares examples i and j at offset h.
+            left_force, right_force = (
+                torch.broadcast_tensors(
+                    normalized_force_magnitude[
+                        :, None, :
+                    ],
+                    normalized_force_magnitude[
+                        None, :, :
+                    ],
+                )
+            )
+
+            # Calculate the Huber distance for every pair and
+            # future timestep:
+            #
+            # rho_delta(c_i,h - c_j,h)
+            #
+            # Huber is quadratic for small differences and linear
+            # for large differences. Large force spikes therefore
+            # have less influence than they would under squared
+            # distance.
+            huber_distance_per_timestep = (
+                F.huber_loss(
+                    left_force,
+                    right_force,
+                    reduction="none",
+                    delta=(
+                        continuous_config
+                        .huber_delta
+                    ),
+                )
+            )
+
+            # A pairwise timestep is usable only when both sampled
+            # sequences contain a real measurement at that offset.
+            #
+            # Shape: [B,B,H]
+            jointly_valid_timesteps = (
+                valid_timesteps[:, None, :]
+                & valid_timesteps[None, :, :]
+            )
+
+            valid_timestep_count = (
+                jointly_valid_timesteps.sum(
+                    dim=-1
+                )
+            )
+
+            # Average the Huber values over jointly valid future
+            # timesteps:
+            #
+            # D_ij = (1 / |V_ij|)
+            #        sum_h in V_ij rho_delta(c_i,h - c_j,h)
+            #
+            # clamp_min prevents division by zero. Pairs with no
+            # common timestep are explicitly removed afterward.
+            pairwise_force_distance = (
+                huber_distance_per_timestep
+                .masked_fill(
+                    ~jointly_valid_timesteps,
+                    0.0,
+                )
+                .sum(dim=-1)
+                / valid_timestep_count.clamp_min(1)
+            )
+
+            if not torch.isfinite(
+                pairwise_force_distance
+            ).all():
+                raise ValueError(
+                    "Nonfinite contact distances. "
+                    "Check force units and force_scale."
+                )
+
+            # Convert distance into a bounded negative weight:
+            #
+            # W_ij =
+            # (1 - exp(-D_ij / tau_c))^gamma
+            #
+            # Similar force histories produce weights near zero.
+            # Different force histories produce weights closer to one.
+            #
+            # expm1 computes exp(x)-1 accurately when x is close
+            # to zero. Negating expm1(-x) gives 1-exp(-x).
+            negative_weights = (
+                -torch.expm1(
+                    -pairwise_force_distance
+                    / continuous_config
+                        .contact_temperature
+                )
+            ).clamp(
+                min=0.0,
+                max=1.0,
+            ).pow(
+                continuous_config.gamma
+            )
+
+            # A pair with no overlapping real measurements cannot
+            # provide evidence about contact similarity.
+            negative_weights = (
+                negative_weights.masked_fill(
+                    valid_timestep_count == 0,
+                    0.0,
+                )
+            )
+
+            # Diagonal entries correspond to the paired positives.
+            # They must never also appear as negatives.
+            negative_weights.fill_diagonal_(0.0)
+
+            # A strictly positive weight means the pair contributes
+            # to the contrastive denominator.
+            negative_mask = (
+                negative_weights > 0
+            )
+
+    else:
+        # Preserve the original binary CaMI behavior.
+        contact_label = (
+            contact_label.long().view(-1)
+        )
+
+        # An example is a valid negative when its contact label
+        # differs from the anchor's contact label.
+        negative_mask = (
+            contact_label.unsqueeze(1)
+            != contact_label.unsqueeze(0)
+        )
+
+    valid_negative_count = (
+        negative_mask.sum(dim=1)
+    )
+
+    valid_anchor_mask = (
+        valid_negative_count > 0
+    )
+
+    # Print the negative distribution once so the dataset and
+    # weighting behavior can be inspected without flooding logs.
+    if not hasattr(
+        self,
+        "_debug_printed_neg_stats",
+    ):
+        self._debug_printed_neg_stats = False
+
+    if not self._debug_printed_neg_stats:
+        print(
+            "\n[BC_CaMI DEBUG] "
+            "_compute_contact_inbatch_cami_loss"
+        )
+
+        if continuous_contact_enabled:
+            print(
+                "  contact comparison: "
+                "Huber-weighted future force magnitude"
+            )
+        else:
+            print(
+                "  contact_label unique/counts:",
+                torch.unique(
+                    contact_label,
+                    return_counts=True,
+                ),
+            )
+
+        print(
+            "  valid negatives min/max/mean:",
+            valid_negative_count.min().item(),
+            valid_negative_count.max().item(),
+            valid_negative_count.float().mean().item(),
+        )
+
+        print(
+            "  valid anchor fraction:",
+            valid_anchor_mask.float().mean().item(),
+        )
+
+        self._debug_printed_neg_stats = True
+
+    # A batch may contain no usable negatives. Return a differentiable
+    # zero instead of producing NaN through an empty reduction.
+    if valid_anchor_mask.sum() == 0:
+        zero = similarity_logits.sum() * 0.0
+
+        info = {
+            "valid_anchor_count": zero.detach(),
+            "valid_anchor_fraction": zero.detach(),
+            "pos_logit_mean": zero.detach(),
+            "neg_logit_mean": zero.detach(),
+            "retrieval_acc": zero.detach(),
+            "avg_valid_negatives": zero.detach(),
+            "soft_scale_mean": zero.detach(),
+            "negative_weight_mean": zero.detach(),
+            "effective_negatives": zero.detach(),
+        }
+
+        return zero, info
+
+    # Invalid negative locations become negative infinity, so their
+    # exponentials contribute zero to the InfoNCE denominator.
+    masked_negative_logits = (
+        similarity_logits.masked_fill(
+            ~negative_mask,
+            float("-inf"),
+        )
+    )
+
+    if continuous_contact_enabled:
+        # The continuous denominator contains:
+        #
+        # W_ij * exp(s_ij)
+        #
+        # In log space:
+        #
+        # log(W_ij * exp(s_ij))
+        # = s_ij + log(W_ij)
+        #
+        # Masked entries receive a temporary weight of one before
+        # log. Their logits remain negative infinity from the mask.
+        log_negative_weights = (
+            negative_weights
+            .masked_fill(
+                ~negative_mask,
+                1.0,
+            )
+            .log()
+        )
+
+        masked_negative_logits = (
+            masked_negative_logits
+            + log_negative_weights
+        )
+
+    # The first column contains the paired positive. Remaining
+    # columns contain all eligible in-batch negatives.
+    denominator_logits = torch.cat(
+        [
+            positive_logits.unsqueeze(1),
+            masked_negative_logits,
+        ],
+        dim=1,
+    )
+
+    log_denominator = torch.logsumexp(
+        denominator_logits,
+        dim=1,
+    )
+
+    # L_i = -log(
+    #     exp(s_ii)
+    #     /
+    #     (exp(s_ii) + sum_j W_ij exp(s_ij))
+    # )
+    per_anchor_loss = -(
+        positive_logits - log_denominator
+    )
+
+    soft_scale_mean = torch.zeros(
+        (),
+        device=query_embedding.device,
+    )
+
+    soft_variant = (
+        self.algo_config.cami.soft_variant
+        if "soft_variant"
+        in self.algo_config.cami
+        else False
+    )
+
+    # Preserve the upstream soft variant for the binary baseline.
+    # Continuous mode already supplies a continuous pair weight,
+    # so applying the separate soft scaling would mix two different
+    # weighting mechanisms.
+    if (
+        soft_variant
+        and not continuous_contact_enabled
+    ):
+        scales = torch.ones(
+            batch_size,
+            device=query_embedding.device,
+            dtype=query_embedding.dtype,
+        )
+
+        for anchor_index in range(batch_size):
+            if valid_anchor_mask[anchor_index]:
+                positive_key = key_embedding[
+                    anchor_index
+                ]
+
+                negative_keys = key_embedding[
+                    negative_mask[anchor_index]
+                ]
+
+                mean_embedding_distance = torch.norm(
+                    positive_key.unsqueeze(0)
+                    - negative_keys,
+                    dim=1,
+                ).mean()
+
+                scales[anchor_index] = torch.clamp(
+                    mean_embedding_distance,
+                    min=1.0,
+                )
+
+        per_anchor_loss = (
+            per_anchor_loss * scales
+        )
+
+        soft_scale_mean = scales[
+            valid_anchor_mask
+        ].mean()
+
+    if continuous_contact_enabled:
+        # In continuous mode, an anchor without an eligible
+        # negative has denominator equal to its numerator.
+        # Its loss is therefore exactly zero and it remains in the
+        # full-batch average.
+        loss = per_anchor_loss.mean()
+    else:
+        # Preserve the original reduction for the binary baseline.
+        loss = per_anchor_loss[
+            valid_anchor_mask
+        ].mean()
+
+    with torch.no_grad():
+        valid_positive_logits = positive_logits[
+            valid_anchor_mask
+        ]
+
+        positive_logit_mean = (
+            valid_positive_logits.mean()
+        )
+
+        negative_logit_mean = (
+            similarity_logits[
+                negative_mask
+            ].mean()
+            if negative_mask.any()
+            else torch.zeros(
+                (),
+                device=similarity_logits.device,
+            )
+        )
+
+        maximum_negative_logits = (
+            masked_negative_logits
+            .max(dim=1)
+            .values
+        )
+
+        # A retrieval is correct when the paired positive scores
+        # higher than every eligible negative for that anchor.
+        retrieval_accuracy = (
+            positive_logits[valid_anchor_mask]
+            > maximum_negative_logits[
+                valid_anchor_mask
+            ]
+        ).float().mean()
+
+        if continuous_contact_enabled:
+            # Mean W_ij over all off-diagonal pair positions.
+            negative_weight_mean = (
+                negative_weights.sum()
+                / max(
+                    batch_size
+                    * (batch_size - 1),
+                    1,
+                )
+            )
+
+            # Sum of continuous negative weights per anchor.
+            # This is the effective number of full-strength negatives.
+            effective_negatives = (
+                negative_weights
+                .sum(dim=1)
+                .mean()
+            )
+        else:
+            # Binary weights are either zero or one, so these
+            # quantities reduce to the proportion and number of
+            # valid binary negatives.
+            negative_weight_mean = (
+                negative_mask.float().sum()
+                / max(
+                    batch_size
+                    * (batch_size - 1),
+                    1,
+                )
+            )
+
+            effective_negatives = (
+                valid_negative_count
+                .float()
+                .mean()
+            )
+
+        info = {
+            "valid_anchor_count": (
+                valid_anchor_mask.float().sum()
+            ),
+            "valid_anchor_fraction": (
+                valid_anchor_mask.float().mean()
+            ),
+            "pos_logit_mean": (
+                positive_logit_mean
+            ),
+            "neg_logit_mean": (
+                negative_logit_mean
+            ),
+            "retrieval_acc": (
+                retrieval_accuracy
+            ),
+            "avg_valid_negatives": (
+                valid_negative_count[
+                    valid_anchor_mask
+                ].float().mean()
+            ),
+            "soft_scale_mean": (
+                soft_scale_mean.detach()
+            ),
+            "negative_weight_mean": (
+                negative_weight_mean
+            ),
+            "effective_negatives": (
+                effective_negatives
+            ),
+        }
+
+    return loss, info
+
+    # def _compute_contact_inbatch_cami_loss(self, query_embedding, key_embedding, contact_label):
+    #     """
+    #     Contact-aware InfoNCE:
+
+    #         L_i = -log exp(q_i·k_i / beta)
+    #                    ---------------------------------------------
+    #                    exp(q_i·k_i / beta) + sum_{j in N_i} exp(q_i·k_j / beta)
+
+    #     where N_i = {j | k_j != k_i}
+    #     """
+    #     beta = self.algo_config.cami.temperature
+
+    #     normalize_embeddings = (
+    #         self.algo_config.cami.normalize_embeddings
+    #         if "normalize_embeddings" in self.algo_config.cami
+    #         else False
+    #     )
+    #     if normalize_embeddings:
+    #         query_embedding = F.normalize(query_embedding, dim=-1)
+    #         key_embedding = F.normalize(key_embedding, dim=-1)
+
+    #     contact_label = contact_label.long().view(-1)
+    #     B = query_embedding.shape[0]
+
+    #     logits = torch.matmul(query_embedding, key_embedding.T) / beta
+    #     pos_logits = logits.diag()
+
+    #     neg_mask = contact_label.unsqueeze(1) != contact_label.unsqueeze(0)
+    #     valid_neg_count = neg_mask.sum(dim=1)
+    #     valid_anchor_mask = valid_neg_count > 0
+
+    #     if not hasattr(self, "_debug_printed_neg_stats"):
+    #         self._debug_printed_neg_stats = False
+
+    #     if not self._debug_printed_neg_stats:
+    #         print("\n[BC_CaMI DEBUG] _compute_contact_inbatch_cami_loss")
+    #         print("  contact_label unique/counts :", torch.unique(contact_label, return_counts=True))
+    #         print("  valid_neg_count min/max/mean:",
+    #             valid_neg_count.min().item(),
+    #             valid_neg_count.max().item(),
+    #             valid_neg_count.float().mean().item())
+    #         print("  valid_anchor_fraction       :", valid_anchor_mask.float().mean().item())
+    #         self._debug_printed_neg_stats = True
+
+    #     if valid_anchor_mask.sum() == 0:
+    #         zero = logits.sum() * 0.0
+    #         info = {
+    #             "valid_anchor_count": zero.detach(),
+    #             "valid_anchor_fraction": zero.detach(),
+    #             "pos_logit_mean": zero.detach(),
+    #             "neg_logit_mean": zero.detach(),
+    #             "retrieval_acc": zero.detach(),
+    #             "avg_valid_negatives": zero.detach(),
+    #             "soft_scale_mean": zero.detach(),
+    #         }
+    #         return zero, info
+
+    #     neg_logits_masked = logits.masked_fill(~neg_mask, float("-inf"))
+    #     denom_inputs = torch.cat([pos_logits.unsqueeze(1), neg_logits_masked], dim=1)
+    #     log_denom = torch.logsumexp(denom_inputs, dim=1)
+    #     per_anchor_loss = -(pos_logits - log_denom)
+
+    #     soft_scale_mean = torch.zeros((), device=query_embedding.device)
+    #     soft_variant = (
+    #         self.algo_config.cami.soft_variant
+    #         if "soft_variant" in self.algo_config.cami
+    #         else False
+    #     )
+
+    #     if soft_variant:
+    #         scales = torch.ones(B, device=query_embedding.device, dtype=query_embedding.dtype)
+    #         for i in range(B):
+    #             if valid_anchor_mask[i]:
+    #                 e_pos_i = key_embedding[i]
+    #                 e_neg_i = key_embedding[neg_mask[i]]
+    #                 dist_mean = torch.norm(e_pos_i.unsqueeze(0) - e_neg_i, dim=1).mean()
+    #                 scales[i] = torch.clamp(dist_mean, min=1.0)
+    #         per_anchor_loss = per_anchor_loss * scales
+    #         soft_scale_mean = scales[valid_anchor_mask].mean()
+
+    #     loss = per_anchor_loss[valid_anchor_mask].mean()
+
+    #     with torch.no_grad():
+    #         valid_pos_logits = pos_logits[valid_anchor_mask]
+    #         pos_logit_mean = valid_pos_logits.mean()
+    #         neg_logit_mean = logits[neg_mask].mean() if neg_mask.any() else torch.zeros((), device=logits.device)
+    #         max_neg_logits = neg_logits_masked.max(dim=1).values
+    #         retrieval_acc = (
+    #             (pos_logits[valid_anchor_mask] > max_neg_logits[valid_anchor_mask]).float().mean()
+    #         )
+
+    #         info = {
+    #             "valid_anchor_count": valid_anchor_mask.float().sum(),
+    #             "valid_anchor_fraction": valid_anchor_mask.float().mean(),
+    #             "pos_logit_mean": pos_logit_mean,
+    #             "neg_logit_mean": neg_logit_mean,
+    #             "retrieval_acc": retrieval_acc,
+    #             "avg_valid_negatives": valid_neg_count[valid_anchor_mask].float().mean(),
+    #             "soft_scale_mean": soft_scale_mean.detach(),
+    #         }
+
+    #     return loss, info
 
     def _compute_losses(self, predictions, batch):
         """
