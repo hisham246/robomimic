@@ -893,14 +893,28 @@ class RNN_MIMO_MLP(Module):
             return feats, rnn_state
         return feats
     
-    def forward_with_features(self, rnn_init_state=None, return_state=False, **inputs):
+    def forward_with_features(
+        self,
+        rnn_init_state=None,
+        return_state=False,
+        return_obs_encoding=False,
+        **inputs
+    ):
         """
         Return decoded outputs and per-step fused latent features.
 
+        Args:
+            return_obs_encoding (bool): if True, also return the PRE-RNN, per-timestep
+                multimodal observation encoding (the output of the shared
+                ObservationGroupEncoder, i.e. @rnn_inputs below). Used by
+                BC_CaMI_LCP / BC_CaMI_CaNCE as the input to the gap encoder.
+                Defaults to False, which leaves the original return signature unchanged.
+
         Returns:
             outputs: dict of [B, T, ...] if per_step=True, else final-step outputs
-            feats:   [B, T, D]
-            optionally rnn_state
+            feats:   [B, T, D]   (post-RNN, post-MLP latent)
+            obs_encoding: [B, T, D_enc]   (only if @return_obs_encoding)
+            optionally rnn_state (always last)
         """
         for obs_group in self.input_obs_group_shapes:
             for k in self.input_obs_group_shapes[obs_group]:
@@ -934,9 +948,14 @@ class RNN_MIMO_MLP(Module):
         else:
             outputs = self.nets["decoder"](feats[:, -1])
 
+        # Return order: (outputs, feats[, obs_encoding][, rnn_state]).
+        # With both flags False this is identical to the original behavior.
+        result = (outputs, feats)
+        if return_obs_encoding:
+            result = result + (rnn_inputs,)
         if return_state:
-            return outputs, feats, rnn_state
-        return outputs, feats
+            result = result + (rnn_state,)
+        return result
 
     def forward(self, rnn_init_state=None, return_state=False, **inputs):
         """
