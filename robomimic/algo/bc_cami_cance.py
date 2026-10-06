@@ -258,6 +258,14 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
             raise ValueError("algo_config.cami.lcp.anchor_mode must be 'all' or 'contact', got '{}'".format(anchor_mode))
         self._anchor_mode = anchor_mode
 
+        # phi_max > 0: bound the gap prediction to [0, phi_max] via phi_max * sigmoid(raw).
+        # Plain InfoNCE can always lower its loss by scaling phi_hat up, so without a bound the
+        # free-space gaps drift off (observed 0.5 -> 3.9 in 15 epochs) and the logits get huge.
+        # w_viol > 0: explicit complementarity violation E_kk = lambda_t . phi_{t+1} on the TRUE
+        # pairs (InfoNCE alone only needs E_kk < E_kl, it never pushes E_kk to 0).
+        self._phi_max = float(lcp_cfg.phi_max) if "phi_max" in lcp_cfg else 0.0
+        self._w_viol = float(lcp_cfg.w_viol) if "w_viol" in lcp_cfg else 0.0
+
         # Raw force arrives as [B, T, D] in newtons (heavy-tailed: median ~0.5, contact ~6-10,
         # max several hundred). The model works with a scaled, clipped magnitude of the
         # force part (first 3 dims) so that lambda_hat, L_mag and the impulse encoder
@@ -398,6 +406,8 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
         # Apply E_v and E_f at EVERY timestep (not just one pair) so the
         # full pool of T-1 consecutive pairs per sequence can be harvested.
         phi_hat_all = TensorUtils.time_distributed(obs_encoding, self.nets["gap_encoder"])
+        if self._phi_max > 0.0:
+            phi_hat_all = self._phi_max * torch.sigmoid(phi_hat_all)
         lambda_hat_all = F.softplus(
             TensorUtils.time_distributed(batch["force"], self.nets["impulse_encoder"])
         )
@@ -560,6 +570,19 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
         """Eq. 4.19, kept OUTSIDE the softmax per the Eq. 4.28 gradient analysis."""
         return torch.clamp(phi_positive, max=0.0).pow(2).sum(dim=-1).mean()
 
+    def _compute_viol_loss(self, lambda_anchor, phi_positive, contact_anchor):
+        """
+        Complementarity violation on the true (positive) pairs, E_kk = lambda_t . phi_{t+1}.
+        Restricted to contact anchors when anchor_mode == "contact".
+        """
+        e_pos = (lambda_anchor * phi_positive).sum(dim=-1)
+        if self._anchor_mode == "contact":
+            m = contact_anchor.bool()
+            if not m.any():
+                return e_pos.sum() * 0.0
+            return e_pos[m].mean()
+        return e_pos.mean()
+
     def _compute_mag_loss(self, lambda_anchor, force_anchor):
         """
         Eq. 4.29: anchor total estimated impulse magnitude to the measured
@@ -600,6 +623,7 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
         nce_loss = zero
         pen_loss = zero
         mag_loss = zero
+        viol_loss = zero
 
         if cami_enabled:
             lambda_anchor, phi_positive, force_anchor, seq_id, contact_anchor = self._harvest_pairs(
@@ -614,16 +638,19 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
             )
             pen_loss = self._compute_pen_loss(phi_positive)
             mag_loss = self._compute_mag_loss(lambda_anchor, force_anchor)
+            viol_loss = self._compute_viol_loss(lambda_anchor, phi_positive, contact_anchor)
 
             losses["nce_loss"] = nce_loss
             losses["pen_loss"] = pen_loss
             losses["mag_loss"] = mag_loss
+            losses["viol_loss"] = viol_loss
             for key, val in nce_info.items():
                 losses[key] = val
         else:
             losses["nce_loss"] = zero
             losses["pen_loss"] = zero
             losses["mag_loss"] = zero
+            losses["viol_loss"] = zero
 
         w_nce = self.algo_config.cami.lcp.loss_weight
         w_pen = self.algo_config.cami.lcp.w_pen
@@ -631,6 +658,7 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
 
         losses["action_loss"] = (
             bc_action_loss + w_nce * nce_loss + w_pen * pen_loss + w_mag * mag_loss
+            + self._w_viol * viol_loss
         )
 
         return losses
@@ -672,6 +700,7 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
         log["NCE_Loss"] = losses["nce_loss"].item()
         log["Pen_Loss"] = losses["pen_loss"].item()
         log["Mag_Loss"] = losses["mag_loss"].item()
+        log["Viol_Loss"] = losses["viol_loss"].item()
 
         if "l2_loss" in losses:
             log["L2_Loss"] = losses["l2_loss"].item()

@@ -61,6 +61,8 @@ class BCCaMICaNCEConfig(BCConfig):
         self.algo.cami.lcp.force_scale = 10.0      # newtons -> O(1); 10 N = dataset contact threshold
         self.algo.cami.lcp.force_clip = 10.0       # clip scaled force magnitude (i.e. 100 N); raw max is ~360 N
         self.algo.cami.lcp.anchor_mode = "all"     # "all" | "contact": which anchors enter the NCE loss
+        self.algo.cami.lcp.phi_max = 0.0           # >0: bound phi_hat to [0, phi_max] via sigmoid (0 = unbounded)
+        self.algo.cami.lcp.w_viol = 0.0            # weight of explicit complementarity violation on positive pairs
 
         # "marginal": negatives = any different-sequence pair in the batch.
         # "regime": negatives = different-sequence AND opposite contact
