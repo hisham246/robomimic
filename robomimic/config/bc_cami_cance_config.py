@@ -45,6 +45,10 @@ class BCCaMICaNCEConfig(BCConfig):
         # Same optimizer names as BC_CaMI_LCP -- BC_CaMI_CaNCE builds the
         # identical two-network structure (gap_encoder, impulse_encoder),
         # just trains them with a different loss.
+        # Declare per-optimizer epoch bookkeeping keys (must exist before the config is
+        # key-locked, so JSONs that set them -- as the baseline bc_cami one does -- load).
+        self.algo.optim_params.policy.num_train_batches = 100
+        self.algo.optim_params.policy.num_epochs = 2000
         self.algo.optim_params.gap_encoder = deepcopy(self.algo.optim_params.policy)
         self.algo.optim_params.impulse_encoder = deepcopy(self.algo.optim_params.policy)
 
@@ -63,7 +67,7 @@ class BCCaMICaNCEConfig(BCConfig):
         self.algo.cami.lcp.negative_mode = "regime"
 
         self.algo.cami.lcp.num_contacts = 1
-        self.algo.cami.lcp.force_dim = 6
+        self.algo.cami.lcp.force_dim = 1
 
         self.algo.cami.lcp.gap_hidden_dims = (256, 256)
         self.algo.cami.lcp.impulse_hidden_dims = (128,)

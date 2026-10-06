@@ -624,7 +624,7 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
         log["NCE_Loss"] = losses["nce_loss"].item()
         log["Pen_Loss"] = losses["pen_loss"].item()
         log["Mag_Loss"] = losses["mag_loss"].item()
-        log["Negative_Mode"] = self._negative_mode
+        # log["Negative_Mode"] = self._negative_mode
 
         if "l2_loss" in losses:
             log["L2_Loss"] = losses["l2_loss"].item()

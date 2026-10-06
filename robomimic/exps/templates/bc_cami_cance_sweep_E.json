@@ -1,7 +1,7 @@
 {
     "algo_name": "bc_cami_cance",
     "experiment": {
-        "name": "cami_cance_regime_image_84_square_force_v15",
+        "name": "cance_sweep_E_beta0.03_w0.01",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
@@ -10,7 +10,7 @@
             "wandb_proj_name": "cami"
         },
         "save": {
-            "enabled": true,
+            "enabled": false,
             "every_n_seconds": null,
             "every_n_epochs": 50,
             "epochs": [],
@@ -27,7 +27,7 @@
         "keep_all_videos": false,
         "video_skip": 5,
         "rollout": {
-            "enabled": true,
+            "enabled": false,
             "n": 50,
             "horizon": 400,
             "rate": 50,
@@ -43,7 +43,7 @@
                 "path": "/home/aist/hisham/cami/cami_datasets/square_image_84_with_force_25_percent.hdf5"
             }
         ],
-        "output_dir": "../../bc_cami_cance_test_matched",
+        "output_dir": "../../bc_cami_cance_sweep",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "low_dim",
@@ -74,7 +74,7 @@
         "goal_mode": null,
         "cuda": true,
         "batch_size": 100,
-        "num_epochs": 2000,
+        "num_epochs": 30,
         "seed": 1,
         "max_grad_norm": 1.0
     },
@@ -212,14 +212,19 @@
             "enabled": true,
             "lcp": {
                 "loss_weight": 0.01,
-                "beta": 1.0,
+                "beta": 0.03,
                 "w_pen": 100.0,
                 "w_mag": 1.0,
                 "negative_mode": "regime",
                 "num_contacts": 1,
                 "force_dim": 1,
-                "gap_hidden_dims": [256, 256],
-                "impulse_hidden_dims": [128]
+                "gap_hidden_dims": [
+                    256,
+                    256
+                ],
+                "impulse_hidden_dims": [
+                    128
+                ]
             }
         }
     },
@@ -231,7 +236,7 @@
                     "robot0_eef_quat",
                     "robot0_gripper_qpos",
                     "object"
-                    ],
+                ],
                 "rgb": [
                     "agentview_image",
                     "robot0_eye_in_hand_image"
@@ -253,16 +258,17 @@
                 "obs_randomizer_class": null,
                 "obs_randomizer_kwargs": {}
             },
-        "rgb": {
-            "core_class": "VisualCore",
-            "core_kwargs": {},
-            "obs_randomizer_class": "CropRandomizer",
-            "obs_randomizer_kwargs": {
-                "crop_height": 76,
-                "crop_width": 76,
-                "num_crops": 1,
-                "pos_enc": false
-            }},
+            "rgb": {
+                "core_class": "VisualCore",
+                "core_kwargs": {},
+                "obs_randomizer_class": "CropRandomizer",
+                "obs_randomizer_kwargs": {
+                    "crop_height": 76,
+                    "crop_width": 76,
+                    "num_crops": 1,
+                    "pos_enc": false
+                }
+            },
             "depth": {
                 "core_class": "VisualCore",
                 "core_kwargs": {},

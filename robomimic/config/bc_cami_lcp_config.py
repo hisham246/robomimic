@@ -48,6 +48,10 @@ class BCCaMILCPConfig(BCConfig):
         # names to exist ("policy", "gap_encoder", "impulse_encoder"); the
         # discrete branch's state_encoder/snippet_encoder/key_proj entries
         # are NOT created here since BC_CaMI_LCP builds no such networks.
+        # Declare per-optimizer epoch bookkeeping keys (must exist before the config is
+        # key-locked, so JSONs that set them -- as the baseline bc_cami one does -- load).
+        self.algo.optim_params.policy.num_train_batches = 100
+        self.algo.optim_params.policy.num_epochs = 2000
         self.algo.optim_params.gap_encoder = deepcopy(self.algo.optim_params.policy)
         self.algo.optim_params.impulse_encoder = deepcopy(self.algo.optim_params.policy)
 
@@ -60,7 +64,7 @@ class BCCaMILCPConfig(BCConfig):
         self.algo.cami.lcp.w_pen = 100.0          # non-penetration penalty weight, Eq. 4.20
 
         self.algo.cami.lcp.num_contacts = 1       # p, number of contact points
-        self.algo.cami.lcp.force_dim = 6          # raw wrench dimensionality [fx,fy,fz,tx,ty,tz]
+        self.algo.cami.lcp.force_dim = 1          # dataset "force" is a scalar magnitude (B,T,1); use 6 only for a full wrench
 
         self.algo.cami.lcp.gap_hidden_dims = (256, 256)   # E_v MLP hidden layers
         self.algo.cami.lcp.impulse_hidden_dims = (128,)   # E_f MLP hidden layers
