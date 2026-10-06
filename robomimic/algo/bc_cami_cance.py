@@ -340,6 +340,8 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
             print("  negative_mode       :", self._negative_mode)
             print("  actions shape       :", tuple(batch["actions"].shape))
             print("  force shape         :", tuple(input_batch["force"].shape))
+            f = input_batch["force"].float()
+            print("  force stats         : min {:.4g} max {:.4g} mean {:.4g} frac|f|>1e-3 {:.3f}".format(f.min().item(), f.max().item(), f.mean().item(), (f.abs() > 1e-3).float().mean().item()))
             print("  contact_label avail :", input_batch["contact_label"] is not None)
             if input_batch["contact_label"] is not None:
                 print("  contact_label shape :", tuple(input_batch["contact_label"].shape))
@@ -493,6 +495,31 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
             ).mean()
             avg_valid_negatives = valid_neg_count[valid_anchor_mask].float().mean()
             pos_logit_mean = pos_logits[valid_anchor_mask].mean()
+
+            # --- per-regime diagnostics (does the energy only solve contact anchors?) ---
+            c_all = contact_anchor.bool()
+            va = valid_anchor_mask
+            cm, fm = va & c_all, va & ~c_all
+            zero_s = torch.zeros((), device=logits.device)
+
+            def _m(x, m):
+                return x[m].mean() if m.any() else zero_s
+
+            pos_win = (pos_logits > max_neg_logits).float()
+            pal = per_anchor_loss.detach()
+            lam_s = lambda_anchor.detach().sum(dim=-1)
+            phi_s = phi_positive.detach().mean(dim=-1)
+            diag_info = {
+                "contact_anchor_frac": c_all[va].float().mean(),
+                "nce_loss_contact": _m(pal, cm),
+                "nce_loss_free": _m(pal, fm),
+                "retrieval_contact": _m(pos_win, cm),
+                "retrieval_free": _m(pos_win, fm),
+                "lambda_contact": _m(lam_s, cm),
+                "lambda_free": _m(lam_s, fm),
+                "phi_contact": _m(phi_s, cm),
+                "phi_free": _m(phi_s, fm),
+            }
             neg_logit_mean = (
                 logits[neg_mask].mean() if neg_mask.any()
                 else torch.zeros((), device=logits.device)
@@ -506,6 +533,7 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
             "pos_logit_mean": pos_logit_mean,
             "neg_logit_mean": neg_logit_mean,
         }
+        info.update(diag_info)
         return loss, info
 
     def _compute_pen_loss(self, phi_positive):
@@ -636,6 +664,9 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
         for key in [
             "retrieval_acc", "avg_valid_negatives", "valid_anchor_fraction",
             "collapse_ceiling", "pos_logit_mean", "neg_logit_mean",
+            "contact_anchor_frac", "nce_loss_contact", "nce_loss_free",
+            "retrieval_contact", "retrieval_free",
+            "lambda_contact", "lambda_free", "phi_contact", "phi_free",
         ]:
             if key in losses:
                 log[key] = losses[key].item()
