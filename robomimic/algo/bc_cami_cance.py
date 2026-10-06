@@ -249,6 +249,22 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
             )
         self._negative_mode = negative_mode
 
+        # Which anchors contribute to the NCE loss. With the bilinear energy E = lambda_hat . phi_hat,
+        # free-space anchors (lambda ~ 0) cannot separate their positive from any negative, so they
+        # only add a constant ~log(1+|N|) (and a gradient that fights the LCP direction).
+        # "contact": only contact-regime anchors; "all": every anchor (previous behaviour).
+        anchor_mode = lcp_cfg.anchor_mode if "anchor_mode" in lcp_cfg else "all"
+        if anchor_mode not in ("all", "contact"):
+            raise ValueError("algo_config.cami.lcp.anchor_mode must be 'all' or 'contact', got '{}'".format(anchor_mode))
+        self._anchor_mode = anchor_mode
+
+        # Raw force arrives as [B, T, D] in newtons (heavy-tailed: median ~0.5, contact ~6-10,
+        # max several hundred). The model works with a scaled, clipped magnitude of the
+        # force part (first 3 dims) so that lambda_hat, L_mag and the impulse encoder
+        # all see O(1) inputs/targets.
+        self._force_scale = float(lcp_cfg.force_scale) if "force_scale" in lcp_cfg else 1.0
+        self._force_clip = float(lcp_cfg.force_clip) if "force_clip" in lcp_cfg else float("inf")
+
         obs_encoding_dim = self.nets["policy"].nets["encoder"].output_shape()[0]
 
         self.nets["gap_encoder"] = build_mlp(
@@ -290,6 +306,9 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
                 "BC_CaMI_CaNCE requires raw force/torque in batch['obs']['force'] "
                 "(shape [B, T, D_f])."
             )
+        # [B, T, D] raw wrench -> [B, T, 1] scaled, clipped force magnitude
+        force = force.float()[..., :3].norm(dim=-1, keepdim=True) / self._force_scale
+        force = force.clamp(max=self._force_clip)
         input_batch["force"] = force
         T = force.shape[1]
 
@@ -340,8 +359,6 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
             print("  negative_mode       :", self._negative_mode)
             print("  actions shape       :", tuple(batch["actions"].shape))
             print("  force shape         :", tuple(input_batch["force"].shape))
-            f = input_batch["force"].float()
-            print("  force stats         : min {:.4g} max {:.4g} mean {:.4g} frac|f|>1e-3 {:.3f}".format(f.min().item(), f.max().item(), f.mean().item(), (f.abs() > 1e-3).float().mean().item()))
             print("  contact_label avail :", input_batch["contact_label"] is not None)
             if input_batch["contact_label"] is not None:
                 print("  contact_label shape :", tuple(input_batch["contact_label"].shape))
@@ -451,6 +468,9 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
 
         valid_neg_count = neg_mask.sum(dim=1)
         valid_anchor_mask = valid_neg_count > 0
+        valid_all_mask = valid_anchor_mask          # for per-regime diagnostics
+        if self._anchor_mode == "contact":
+            valid_anchor_mask = valid_anchor_mask & contact_anchor.bool()
 
         if not hasattr(self, "_debug_printed_cance_neg_stats"):
             self._debug_printed_cance_neg_stats = False
@@ -498,7 +518,7 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
 
             # --- per-regime diagnostics (does the energy only solve contact anchors?) ---
             c_all = contact_anchor.bool()
-            va = valid_anchor_mask
+            va = valid_all_mask   # diagnostics always cover every anchor, whatever anchor_mode is
             cm, fm = va & c_all, va & ~c_all
             zero_s = torch.zeros((), device=logits.device)
 
@@ -652,7 +672,6 @@ class BC_CaMI_CaNCE(_PolicyLatentMixin, BC_RNN):
         log["NCE_Loss"] = losses["nce_loss"].item()
         log["Pen_Loss"] = losses["pen_loss"].item()
         log["Mag_Loss"] = losses["mag_loss"].item()
-        # log["Negative_Mode"] = self._negative_mode
 
         if "l2_loss" in losses:
             log["L2_Loss"] = losses["l2_loss"].item()

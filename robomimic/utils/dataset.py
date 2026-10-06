@@ -452,7 +452,16 @@ class SequenceDataset(torch.utils.data.Dataset):
             for k in dataset_keys:
                 if k in hdf5_file["data/{}".format(ep)]:
                     all_data[ep][k] = hdf5_file["data/{}/{}".format(ep, k)][()].astype("float32")
+                elif "data/{}/obs/{}".format(ep, k) in hdf5_file:
+                    # key is stored under obs/ (e.g. force): load the real data instead of zeros
+                    all_data[ep][k] = hdf5_file["data/{}/obs/{}".format(ep, k)][()].astype("float32")
                 else:
+                    if not hasattr(self, "_warned_missing_dataset_keys"):
+                        self._warned_missing_dataset_keys = set()
+                    if k not in self._warned_missing_dataset_keys:
+                        print("[SequenceDataset WARNING] dataset key '{}' not found in data/{}[/obs]; "
+                              "filling with ZEROS.".format(k, ep))
+                        self._warned_missing_dataset_keys.add(k)
                     all_data[ep][k] = np.zeros((all_data[ep]["attrs"]["num_samples"], 1), dtype=np.float32)
 
             if "model_file" in hdf5_file["data/{}".format(ep)].attrs:
@@ -619,6 +628,8 @@ class SequenceDataset(torch.utils.data.Dataset):
 
         # read from file
         hd5key = f"data/{ep}/{key}"
+        if hd5key not in self.hdf5_file and f"data/{ep}/obs/{key}" in self.hdf5_file:
+            hd5key = f"data/{ep}/obs/{key}"  # e.g. force stored under obs/
         return self.hdf5_file[hd5key]
 
     def __getitem__(self, index):

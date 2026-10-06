@@ -58,6 +58,9 @@ class BCCaMICaNCEConfig(BCConfig):
         self.algo.cami.lcp.beta = 1.0              # softmax temperature, Eq. 4.24 -- UNTUNED, sweep this first
         self.algo.cami.lcp.w_pen = 100.0           # non-penetration penalty, Eq. 4.19
         self.algo.cami.lcp.w_mag = 1.0             # scale-anchoring term, Eq. 4.29
+        self.algo.cami.lcp.force_scale = 10.0      # newtons -> O(1); 10 N = dataset contact threshold
+        self.algo.cami.lcp.force_clip = 10.0       # clip scaled force magnitude (i.e. 100 N); raw max is ~360 N
+        self.algo.cami.lcp.anchor_mode = "all"     # "all" | "contact": which anchors enter the NCE loss
 
         # "marginal": negatives = any different-sequence pair in the batch.
         # "regime": negatives = different-sequence AND opposite contact
