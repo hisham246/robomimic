@@ -41,7 +41,8 @@ class ManiFlowPolicyConfig(BaseConfig):
         self.algo.optim_params.policy.learning_rate.warmup_steps = 500 # number of warmup steps (used by "cosine" scheduler)
         self.algo.optim_params.policy.learning_rate.epoch_schedule = [] # epochs where LR decay occurs (used by "linear" and "multistep" schedulers)
         self.algo.optim_params.policy.learning_rate.do_not_lock_keys()
-        self.algo.optim_params.policy.regularization.L2 = 1e-6          # L2 regularization strength
+        self.algo.optim_params.policy.betas = [0.9, 0.95]               # AdamW betas
+        self.algo.optim_params.policy.regularization.L2 = 1e-3          # AdamW weight decay (not applied to biases, norms, pos. embeddings)
 
         # horizon parameters
         self.algo.horizon.observation_horizon = 2

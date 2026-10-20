@@ -63,8 +63,8 @@ class ManiFlowPolicy(PolicyAlgo):
             input_dim=self.ac_dim,
             output_dim=self.ac_dim,
             horizon=self.algo_config.horizon.prediction_horizon,
-            cond_dim=obs_dim,                                        # per-frame feature size
-            cond_len=self.algo_config.horizon.observation_horizon,   # one token per obs frame
+            cond_dim=obs_dim * self.algo_config.horizon.observation_horizon,  # all frames and cameras in one token
+            cond_len=1,
             timestep_embed_dim=self.algo_config.transformer.timestep_embed_dim,
             target_t_embed_dim=self.algo_config.transformer.timestep_embed_dim,
             n_layer=self.algo_config.transformer.n_layer,
@@ -94,6 +94,35 @@ class ManiFlowPolicy(PolicyAlgo):
         self.obs_queue = None
         self.action_queue = None
     
+    def _create_optimizers(self):
+        """
+        Same as the base class, but the policy optimizer follows ManiFlow: AdamW with configurable
+        betas, and no weight decay on biases, norm weights and positional embeddings.
+        """
+        super(ManiFlowPolicy, self)._create_optimizers()
+
+        optim_params = self.optim_params["policy"]
+        decay, no_decay = [], []
+        for name, p in self.nets["policy"].named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim < 2 or name.endswith("pos_emb") or name.endswith("pos_embed"):
+                no_decay.append(p)
+            else:
+                decay.append(p)
+        weight_decay = optim_params["regularization"]["L2"]
+        self.optimizers["policy"] = torch.optim.AdamW(
+            [
+                {"params": decay, "weight_decay": weight_decay},
+                {"params": no_decay, "weight_decay": 0.0},
+            ],
+            lr=optim_params["learning_rate"]["initial"],
+            betas=tuple(optim_params["betas"]),
+        )
+        # schedulers are bound to their optimizer, so rebuild it
+        self.lr_schedulers["policy"] = TorchUtils.lr_scheduler_from_optim_params(
+            net_optim_params=optim_params, net=self.nets["policy"], optimizer=self.optimizers["policy"])
+
     def process_batch_for_training(self, batch):
         """
         Processes input batch from a data loader to filter out
@@ -169,7 +198,9 @@ class ManiFlowPolicy(PolicyAlgo):
             obs_features = TensorUtils.time_distributed(inputs, self.nets["policy"]["obs_encoder"], inputs_as_kwargs=True)
             assert obs_features.ndim == 3  # [B, T, D]
 
-            # obs features are passed to the transformer as [B, To, D] tokens (no flattening)
+            # as in ManiFlow's TimmObsEncoder, all frames/cameras/low-dim are concatenated into a single
+            # conditioning token [B, 1, To * D]
+            obs_cond = obs_features.flatten(start_dim=1).unsqueeze(1)
             net = self.nets["policy"]["noise_pred_net"]
             relative = (mf.target_t_mode == "relative")
 
@@ -181,7 +212,7 @@ class ManiFlowPolicy(PolicyAlgo):
             xt = (1 - t) * x0 + t * x1
             dt = torch.zeros(n_flow, device=self.device)
             target_t = dt if relative else t.view(-1) + dt
-            v_pred = net(xt, t.view(-1), target_t, global_cond=obs_features[:n_flow])
+            v_pred = net(xt, t.view(-1), target_t, global_cond=obs_cond[:n_flow])
             loss_flow = F.mse_loss(v_pred, x1 - x0)
             loss = loss_flow
 
@@ -199,11 +230,11 @@ class ManiFlowPolicy(PolicyAlgo):
                 ema_net = self.ema.averaged_model["policy"]["noise_pred_net"]
                 with torch.no_grad():
                     v_avg = ema_net(x_t_next, t_next.view(-1), target_t_next,
-                                    global_cond=obs_features[n_flow:].detach())
+                                    global_cond=obs_cond[n_flow:].detach())
                 x1_hat = x_t_next + (1 - t_next) * v_avg
                 v_target = (x1_hat - xt) / (1 - t)
                 target_t = dt if relative else t_next.view(-1)
-                v_pred = net(xt, t.view(-1), target_t, global_cond=obs_features[n_flow:])
+                v_pred = net(xt, t.view(-1), target_t, global_cond=obs_cond[n_flow:])
                 loss_ct = F.mse_loss(v_pred, v_target)
                 loss = loss + loss_ct
 
@@ -221,6 +252,7 @@ class ManiFlowPolicy(PolicyAlgo):
                     net=self.nets,
                     optim=self.optimizers["policy"],
                     loss=loss,
+                    max_grad_norm=self.global_config.train.max_grad_norm,
                 )
                 
                 # update Exponential Moving Average of the model weights
@@ -297,6 +329,16 @@ class ManiFlowPolicy(PolicyAlgo):
         To = self.algo_config.horizon.observation_horizon
         Ta = self.algo_config.horizon.action_horizon
         
+        # keep a history of the last To observations. This is a no-op if the env already returns
+        # stacked frames (e.g. FrameStackWrapper); otherwise the first frame is repeated at the
+        # start of an episode, matching pad_frame_stack in the dataset.
+        if all(obs_dict[k].ndim - 1 == len(self.obs_shapes[k]) for k in self.obs_shapes):
+            if len(self.obs_queue) == 0:
+                self.obs_queue.extend([obs_dict] * To)
+            else:
+                self.obs_queue.append(obs_dict)
+            obs_dict = {k: torch.stack([o[k] for o in self.obs_queue], dim=1) for k in self.obs_shapes}
+
         if len(self.action_queue) == 0:
             # no actions left, run inference
             # [1,T,Da]
@@ -342,6 +384,7 @@ class ManiFlowPolicy(PolicyAlgo):
         obs_features = TensorUtils.time_distributed(inputs, nets["policy"]["obs_encoder"], inputs_as_kwargs=True)
         assert obs_features.ndim == 3  # [B, T, D]
         B = obs_features.shape[0]
+        obs_cond = obs_features.flatten(start_dim=1).unsqueeze(1)  # [B, 1, To * D]
 
         # initialize action from Gaussian noise (t = 0) and integrate the flow to t = 1 with Euler steps
         naction = torch.randn((B, Tp, action_dim), device=self.device)
@@ -356,7 +399,7 @@ class ManiFlowPolicy(PolicyAlgo):
                     sample=naction,
                     timestep=t,
                     target_t=target_t,
-                    global_cond=obs_features
+                    global_cond=obs_cond
                 )
                 naction = naction + v * dt
 
