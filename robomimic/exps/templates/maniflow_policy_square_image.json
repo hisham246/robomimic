@@ -6,7 +6,7 @@
         "logging": {
             "terminal_output_to_txt": true,
             "log_tb": true,
-            "log_wandb": false,
+            "log_wandb": true,
             "wandb_proj_name": "cami_extension"
         },
         "save": {
@@ -40,7 +40,7 @@
     "train": {
         "data": [
             {
-                "path": "/home/aist/hisham/cami/cami_datasets/square_image_84_with_force_25_percent.hdf5"
+                "path": "/home/aist/hisham/cami/cami_datasets/square_image_84_with_force.hdf5"
             }
         ],
         "output_dir": "../../maniflow_policy_square",
