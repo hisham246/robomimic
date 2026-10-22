@@ -1,7 +1,7 @@
 {
     "algo_name": "bc_cami_cance_act",
     "experiment": {
-        "name": "cance_act_additive_2000ep",
+        "name": "cance_act_additive_2000ep_50_percent",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
@@ -40,10 +40,10 @@
     "train": {
         "data": [
             {
-                "path": "/home/aist/hisham/cami/cami_datasets/square_image_84_with_force.hdf5"
+                "path": "/home/aist/hisham/cami/cami_datasets/square_image_84_with_force_50_percent.hdf5"
             }
         ],
-        "output_dir": "../../bc_cami_cance_act_additive",
+        "output_dir": "../../bc_cami_cance_act_additive_50_percent",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "low_dim",
