@@ -1,5 +1,5 @@
 import torch, json
-ckpt_path = "/home/aist/hisham/cami/cami_models/bc_rnn_cami_square_100_percent_success_0.88.pth"
+ckpt_path = "/home/aist/hisham/cami/cami_models/bc_rnn_cami_tool_hang_100_percent_success_0.64.pth"
 ckpt = torch.load(ckpt_path,
                   map_location="cpu", weights_only=False)
 cfg = json.loads(ckpt["config"])

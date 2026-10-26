@@ -1,12 +1,12 @@
 {
     "algo_name": "bc_cami",
     "experiment": {
-        "name": "bc_cami_image_84_square_force_v15_20260330_112253",
+        "name": "bc_cami_image_240_tool_hang_force_v15_20260402_051545",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
             "log_tb": true,
-            "log_wandb": false,
+            "log_wandb": true,
             "wandb_proj_name": "cami"
         },
         "save": {
@@ -18,7 +18,7 @@
             "on_best_rollout_return": false,
             "on_best_rollout_success_rate": true
         },
-        "epoch_every_n_steps": 100,
+        "epoch_every_n_steps": 500,
         "validation_epoch_every_n_steps": 10,
         "env": null,
         "additional_envs": null,
@@ -29,7 +29,7 @@
         "rollout": {
             "enabled": true,
             "n": 50,
-            "horizon": 400,
+            "horizon": 700,
             "rate": 50,
             "warmstart": 0,
             "terminate_on_success": true
@@ -40,10 +40,10 @@
     "train": {
         "data": [
             {
-                "path": "/home/student/h2khalil/datasets/image_84_square_force_v15.hdf5"
+                "path": "/home/h2khalil/datasets/robosuite_datasets/tool_hang/ph/image_240_tool_hang_force_v15.hdf5"
             }
         ],
-        "output_dir": "../../bc_cami_test_2",
+        "output_dir": "../../bc_rnn_cami_100_percent_tool_hang",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "low_dim",
@@ -72,7 +72,7 @@
         },
         "goal_mode": null,
         "cuda": true,
-        "batch_size": 100,
+        "batch_size": 16,
         "num_epochs": 2000,
         "seed": 1,
         "max_grad_norm": 1.0
@@ -90,7 +90,7 @@
                 "regularization": {
                     "L2": 0.0
                 },
-                "num_train_batches": 100,
+                "num_train_batches": 500,
                 "num_epochs": 2000
             },
             "state_encoder": {
@@ -104,7 +104,7 @@
                 "regularization": {
                     "L2": 0.0
                 },
-                "num_train_batches": 100,
+                "num_train_batches": 500,
                 "num_epochs": 2000
             },
             "snippet_encoder": {
@@ -118,7 +118,7 @@
                 "regularization": {
                     "L2": 0.0
                 },
-                "num_train_batches": 100,
+                "num_train_batches": 500,
                 "num_epochs": 2000
             },
             "key_proj": {
@@ -132,7 +132,7 @@
                 "regularization": {
                     "L2": 0.0
                 },
-                "num_train_batches": 100,
+                "num_train_batches": 500,
                 "num_epochs": 2000
             }
         },
@@ -251,7 +251,7 @@
             "snippet_hidden_dim": 256,
             "snippet_num_layers": 1,
             "image_obs_key": [
-                "agentview_image",
+                "sideview_image",
                 "robot0_eye_in_hand_image"
             ],
             "force_obs_key": "force",
@@ -269,7 +269,7 @@
                     "object"
                 ],
                 "rgb": [
-                    "agentview_image",
+                    "sideview_image",
                     "robot0_eye_in_hand_image"
                 ],
                 "depth": [],
@@ -294,8 +294,8 @@
                 "core_kwargs": {},
                 "obs_randomizer_class": "CropRandomizer",
                 "obs_randomizer_kwargs": {
-                    "crop_height": 76,
-                    "crop_width": 76,
+                    "crop_height": 216,
+                    "crop_width": 216,
                     "num_crops": 1,
                     "pos_enc": false
                 }
