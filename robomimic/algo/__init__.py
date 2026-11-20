@@ -15,3 +15,4 @@ from robomimic.algo.bc_cami import BC_CaMI
 from robomimic.algo.bc_cami_lcp import BC_CaMI_LCP
 from robomimic.algo.bc_cami_cance import BC_CaMI_CaNCE
 from robomimic.algo.bc_cami_cance_action import BC_CaMI_CaNCE_Act
+from robomimic.algo.maniflow_cami import ManiFlowCaMI

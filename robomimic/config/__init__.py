@@ -16,3 +16,4 @@ from robomimic.config.bc_cami_config import BCCaMIConfig
 from robomimic.config.bc_cami_lcp_config import BCCaMILCPConfig
 from robomimic.config.bc_cami_cance_config import BCCaMICaNCEConfig
 from robomimic.config.bc_cami_cance_action_config import BCCaMICaNCEActConfig
+from robomimic.config.maniflow_cami_config import ManiFlowCaMIConfig
