@@ -47,7 +47,7 @@ class ManiFlowCaMIV2Config(ManiFlowPolicyConfig):
         p.force_dim = 1                       # must be 1: impulse head sees the scaled, clipped |f_xyz| (as in BC_CaMI_CaNCE)
         p.num_contacts = 1
         p.anchor_mode = "contact"             # "contact": NCE over contact anchors | "all"
-        p.negative_mode = "marginal"            # "regime": other sequence AND opposite regime | "marginal"
+        p.negative_mode = "regime"            # "regime": other sequence AND opposite regime | "marginal"
         p.gap_hidden_dims = (256, 256)
         p.impulse_hidden_dims = (128,)
 
@@ -64,7 +64,7 @@ class ManiFlowCaMIV2Config(ManiFlowPolicyConfig):
         a.snippet_num_layers = 1
         a.key_proj_hidden_dims = (128,)
         a.momentum = 0.995
-        a.negative_mode = "regime"
+        a.negative_mode = "marginal"
         a.contact_definition = "window"       # "window": any contact in the snippet | "anchor": label at t
 
         # ---- v2 options. Defaults reproduce v1 exactly, so v1 checkpoints/configs load unchanged.
