@@ -1,16 +1,16 @@
 {
-    "algo_name": "maniflow_cami",
+    "algo_name": "maniflow_cami_v2",
     "experiment": {
-        "name": "maniflow_cami_control",
+        "name": "maniflow_cami_v2_smoke_20_epochs_marginal",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
             "log_tb": true,
-            "log_wandb": true,
+            "log_wandb": false,
             "wandb_proj_name": "cami_extension"
         },
         "save": {
-            "enabled": true,
+            "enabled": false,
             "every_n_seconds": null,
             "every_n_epochs": 50,
             "epochs": [],
@@ -27,7 +27,7 @@
         "keep_all_videos": false,
         "video_skip": 5,
         "rollout": {
-            "enabled": true,
+            "enabled": false,
             "n": 50,
             "horizon": 400,
             "rate": 50,
@@ -43,7 +43,7 @@
                 "path": "/home/aist/hisham/cami/cami_datasets/square_image_84_with_force.hdf5"
             }
         ],
-        "output_dir": "../../maniflow_policy_square",
+        "output_dir": "../../maniflow_cami_square",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 0,
         "hdf5_cache_mode": "low_dim",
@@ -126,7 +126,15 @@
             "power": 0.75
         },
         "cami": {
-            "enabled": false
+            "enabled": true,
+            "action": {
+                "key_inputs": "actions_force",
+                "loss": "symmetric",
+                "loss_weight_sym": 0.01,
+                "neg_weighting": "force_profile",
+                "neg_weight_tau": 1.0,
+                "snippet_align": "executed"
+            }
         }
     },
     "observation": {

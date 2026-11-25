@@ -1,7 +1,7 @@
 {
     "algo_name": "maniflow_cami",
     "experiment": {
-        "name": "maniflow_cami_smoke",
+        "name": "maniflow_cami_smoke_20_epochs",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
@@ -74,7 +74,7 @@
         "goal_mode": null,
         "cuda": true,
         "batch_size": 100,
-        "num_epochs": 3,
+        "num_epochs": 2000,
         "seed": 1,
         "max_grad_norm": 1.0
     },
