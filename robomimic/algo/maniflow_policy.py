@@ -418,6 +418,8 @@ class ManiFlowPolicy(PolicyAlgo):
             "optimizers": { k : self.optimizers[k].state_dict() for k in self.optimizers },
             "lr_schedulers": { k : self.lr_schedulers[k].state_dict() if self.lr_schedulers[k] is not None else None for k in self.lr_schedulers },
             "ema": self.ema.averaged_model.state_dict() if self.ema is not None else None,
+            # EMA decay warmup depends on this counter; without it a resumed run restarts warmup at decay=0
+            "ema_optimization_step": self.ema.optimization_step if self.ema is not None else None,
         }
 
     def deserialize(self, model_dict, load_optimizers=False):
@@ -440,6 +442,11 @@ class ManiFlowPolicy(PolicyAlgo):
 
         if model_dict.get("ema", None) is not None:
             self.ema.averaged_model.load_state_dict(model_dict["ema"])
+            if model_dict.get("ema_optimization_step") is not None:
+                self.ema.optimization_step = model_dict["ema_optimization_step"]
+            elif load_optimizers and (model_dict["lr_schedulers"].get("policy") or {}).get("last_epoch") is not None:
+                # older checkpoints: recover the step count from the per-batch lr scheduler
+                self.ema.optimization_step = model_dict["lr_schedulers"]["policy"]["last_epoch"]
 
         if load_optimizers:
             for k in model_dict["optimizers"]:

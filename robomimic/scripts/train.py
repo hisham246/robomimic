@@ -259,6 +259,7 @@ def train(config, device, resume=False):
         config,
         log_tb=config.experiment.logging.log_tb,
         log_wandb=config.experiment.logging.log_wandb,
+        resume=resume,
     )
     model = algo_factory(
         algo_name=config.algo_name,

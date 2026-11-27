@@ -41,7 +41,7 @@ class DataLogger(object):
     """
     Logging class to log metrics to tensorboard and/or retrieve running statistics about logged data.
     """
-    def __init__(self, log_dir, config, log_tb=True, log_wandb=False):
+    def __init__(self, log_dir, config, log_tb=True, log_wandb=False, resume=False):
         """
         Args:
             log_dir (str): base path to store logs
@@ -67,6 +67,16 @@ class DataLogger(object):
                     "\nSet this macro in {base_path}/macros_private.py" \
                     "\nIf this file does not exist, first run python {base_path}/scripts/setup_macros.py".format(base_path=robomimic.__path__[0])
             
+            # when resuming, reattach to the wandb run previously created in this log dir
+            wandb_resume_kwargs = {}
+            if resume:
+                import glob
+                prev_runs = sorted(glob.glob(os.path.join(log_dir, "wandb", "*run-*")))
+                if len(prev_runs) > 0:
+                    run_id = os.path.basename(prev_runs[-1]).split("-")[-1]
+                    wandb_resume_kwargs = dict(id=run_id, resume="allow")
+                    print("resuming wandb run {}".format(run_id))
+
             # attempt to set up wandb 10 times. If unsuccessful after these trials, don't use wandb
             num_attempts = 10
             for attempt in range(num_attempts):
@@ -80,6 +90,7 @@ class DataLogger(object):
                         name=config.experiment.name,
                         dir=log_dir,
                         mode=("offline" if attempt == num_attempts - 1 else "online"),
+                        **wandb_resume_kwargs,
                     )
 
                     # set up info for identifying experiment
