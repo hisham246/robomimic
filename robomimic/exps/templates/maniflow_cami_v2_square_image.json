@@ -1,7 +1,7 @@
 {
     "algo_name": "maniflow_cami_v2",
     "experiment": {
-        "name": "maniflow_cami_v2_square_insert_100_percent",
+        "name": "maniflow_cami_v2_square_insert_50_percent",
         "validate": false,
         "logging": {
             "terminal_output_to_txt": true,
@@ -40,7 +40,7 @@
     "train": {
         "data": [
             {
-                "path": "/home/aist/hisham/cami/cami_datasets/square_image_84_with_force.hdf5"
+                "path": "/home/aist/hisham/cami/cami_datasets/square_image_84_with_force_50_percent.hdf5"
             }
         ],
         "output_dir": "../../maniflow_cami_square",
